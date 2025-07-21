@@ -1,243 +1,294 @@
-#! /usr/bin/env python
-# -*- coding: utf-8 -*-
-#
-# Copyright (c) 2013 PAL Robotics SL.
-# All rights reserved.
-#
-# Software License Agreement (BSD License 2.0)
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions
-# are met:
-#
-#  * Redistributions of source code must retain the above copyright
-#    notice, this list of conditions and the following disclaimer.
-#  * Redistributions in binary form must reproduce the above
-#    copyright notice, this list of conditions and the following
-#    disclaimer in the documentation and/or other materials provided
-#    with the distribution.
-#  * Neither the name of PAL Robotics SL. nor the names of its
-#    contributors may be used to endorse or promote products derived
-#    from this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
-# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
-# COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
-# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
-# BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-# ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-# POSSIBILITY OF SUCH DAMAGE.
-#
-#
-# Authors:
-#   * Siegfried-A. Gevatter
-#   * Jeremie Deray (artivis)
+# New Keyboard Teleop with ackermann_msgs.msg 
+# Fixed_by Jisang_Yun
 
 import curses
-
-# For 'q' keystroke exit
 import os
 import signal
 import time
+import threading
+from collections import defaultdict
 
-from geometry_msgs.msg import Twist, TwistStamped
+try:
+    from pynput import keyboard
+    PYNPUT_AVAILABLE = True
+except ImportError:
+    PYNPUT_AVAILABLE = False
+    print("pynput not available. Install with: pip install pynput")
+
 import rclpy
-from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import qos_profile_system_default
-from std_msgs.msg import Header
-
-
-class Velocity(object):
-
-    def __init__(self, min_velocity, max_velocity, num_steps):
-        assert min_velocity > 0 and max_velocity > 0 and num_steps > 0
-        self._min = min_velocity
-        self._max = max_velocity
-        self._num_steps = num_steps
-        if self._num_steps > 1:
-            self._step_incr = (max_velocity - min_velocity) / (self._num_steps - 1)
-        else:
-            # If num_steps is one, we always use the minimum velocity.
-            self._step_incr = 0
-
-    def __call__(self, value, step):
-        """
-        Form a velocity.
-
-        Take a value in the range [0, 1] and the step and returns the
-        velocity (usually m/s or rad/s).
-        """
-        if step == 0:
-            return 0
-
-        assert step > 0 and step <= self._num_steps
-        max_value = self._min + self._step_incr * (step - 1)
-        return value * max_value
+from ackermann_msgs.msg import AckermannDriveStamped
 
 
 class TextWindow():
-
-    _screen = None
-    _window = None
-    _num_lines = None
-
+    """Curses-based text window for clean GUI display"""
+    
     def __init__(self, stdscr, lines=10):
         self._screen = stdscr
         self._screen.nodelay(True)
-        curses.curs_set(0)
-
+        curses.curs_set(0)  # Hide cursor
         self._num_lines = lines
-
-    def read_key(self):
-        keycode = self._screen.getch()
-        return keycode if keycode != -1 else None
+        
+        # Initialize colors if available
+        if curses.has_colors():
+            curses.start_color()
+            curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)
+            curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+            curses.init_pair(3, curses.COLOR_RED, curses.COLOR_BLACK)
+            curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)
 
     def clear(self):
         self._screen.clear()
 
-    def write_line(self, lineno, message):
+    def write_line(self, lineno, message, color_pair=0):
+        """Write a line of text to the screen"""
         if lineno < 0 or lineno >= self._num_lines:
-            raise ValueError('lineno out of bounds')
+            return
+        
         height, width = self._screen.getmaxyx()
-        y = (height / self._num_lines) * lineno
-        x = 10
-        for text in message.split('\n'):
-            text = text.ljust(width)
-            # TODO(artivis) Why are those floats ??
-            self._screen.addstr(int(y), int(x), text)
-            y += 1
+        y = int((height / self._num_lines) * lineno)
+        x = 2
+        
+        for i, text in enumerate(message.split('\n')):
+            if y + i < height - 1:  # Ensure we don't write past screen bounds
+                text = text.ljust(min(len(text), width - x - 1))
+                try:
+                    if color_pair > 0:
+                        self._screen.addstr(y + i, x, text, curses.color_pair(color_pair))
+                    else:
+                        self._screen.addstr(y + i, x, text)
+                except curses.error:
+                    pass  # Ignore errors from writing to screen edges
+
+    def draw_title(self, title="F1TENTH Keyboard Teleop"):
+        """Draw title without border"""
+        height, width = self._screen.getmaxyx()
+        title_x = max(2, (width - len(title)) // 2)
+        self._screen.addstr(0, title_x, title, curses.color_pair(4))
 
     def refresh(self):
         self._screen.refresh()
 
-    def beep(self):
-        curses.flash()
 
-
-class SimpleKeyTeleop(Node):
-
+class PynputCursesKeyTeleop(Node):
     def __init__(self, interface):
-        super().__init__('key_teleop')
-
+        super().__init__('pynput_curses_key_teleop')
+        
+        if not PYNPUT_AVAILABLE:
+            self.get_logger().error("pynput library is required. Install with: pip install pynput")
+            return
+        
         self._interface = interface
+        self._hz = 10.0
+        self._forward_rate = 0.8
+        self._backward_rate = 0.5
+        self._rotation_rate = 1.0
+        self._running = True
+        
+        # Thread-safe key state tracking
+        self._key_states = defaultdict(bool)
+        self._state_lock = threading.Lock()
+        
+        # Key mappings to movement (linear, angular)
+        self._key_mappings = {
+            keyboard.Key.up: (1.0, 0.0),      # forward
+            keyboard.Key.down: (-1.0, 0.0),   # backward
+            keyboard.Key.left: (0.0, 5.0),    # left turn
+            keyboard.Key.right: (0.0, -5.0),  # right turn
+            keyboard.KeyCode.from_char('w'): (1.0, 0.0),   # forward
+            keyboard.KeyCode.from_char('s'): (-1.0, 0.0),  # backward
+            keyboard.KeyCode.from_char('a'): (0.0, 5.0),   # left turn
+            keyboard.KeyCode.from_char('d'): (0.0, -5.0),  # right turn
+        }
+        
+        self._linear = 0.0
+        self._angular = 0.0
+        self._active_keys = []
+        
+        # ROS publisher
+        self._pub_cmd = self.create_publisher(
+            AckermannDriveStamped, '/ackermann_cmd', qos_profile_system_default)
+        
+        # Start keyboard listener
+        self._start_keyboard_listener()
 
-        self._publish_stamped_twist = self.declare_parameter('twist_stamped_enabled', False).value
+    def _start_keyboard_listener(self):
+        """Start the keyboard listener in a separate thread"""
+        def on_press(key):
+            # Handle quit command
+            if key == keyboard.KeyCode.from_char('q') or key == keyboard.KeyCode.from_char('Q'):
+                self.get_logger().info("Quit key pressed. Shutting down...")
+                self._running = False
+                return False
+            
+            # Handle movement keys
+            if key in self._key_mappings:
+                with self._state_lock:
+                    self._key_states[key] = True
 
-        if self._publish_stamped_twist:
-            self._pub_cmd = self.create_publisher(TwistStamped, 'key_vel',
-                                                  qos_profile_system_default)
-        else:
-            self._pub_cmd = self.create_publisher(Twist, 'key_vel', qos_profile_system_default)
+        def on_release(key):
+            if key in self._key_mappings:
+                with self._state_lock:
+                    self._key_states[key] = False
 
-        self._hz = self.declare_parameter('hz', 10).value
-
-        self._forward_rate = self.declare_parameter('forward_rate', 0.8).value
-        self._backward_rate = self.declare_parameter('backward_rate', 0.5).value
-        self._rotation_rate = self.declare_parameter('rotation_rate', 1.0).value
-        self._last_pressed = {}
-        self._angular = 0
-        self._linear = 0
-
-    movement_bindings = {
-        curses.KEY_UP:    (1,  0),
-        curses.KEY_DOWN:  (-1,  0),
-        curses.KEY_LEFT:  (0,  1),
-        curses.KEY_RIGHT: (0, -1),
-    }
+        # Start listener WITHOUT suppress - allows normal keyboard usage elsewhere
+        self._listener = keyboard.Listener(
+            on_press=on_press,
+            on_release=on_release
+        )
+        self._listener.start()
 
     def run(self):
-        self._running = True
+        """Main run loop"""
         while self._running:
-            while True:
-                keycode = self._interface.read_key()
-                if keycode is None:
-                    break
-                self._key_pressed(keycode)
-            self._set_velocity()
+            self._calculate_velocity()
             self._publish()
-            # TODO(artivis) use Rate once available
-            time.sleep(1.0/self._hz)
+            time.sleep(1.0 / self._hz)
 
-    def _make_twist(self, linear, angular):
-        twist = Twist()
-        twist.linear.x = linear
-        twist.angular.z = angular
-        return twist
-
-    def _make_twist_stamped(self, linear, angular):
-        twist_stamped = TwistStamped()
-        header = Header()
-        header.stamp = rclpy.clock.Clock().now().to_msg()
-        header.frame_id = 'key_teleop'
-
-        twist_stamped.header = header
-        twist_stamped.twist.linear.x = linear
-        twist_stamped.twist.angular.z = angular
-        return twist_stamped
-
-    def _set_velocity(self):
-        now = self.get_clock().now()
-        keys = []
-        for a in self._last_pressed:
-            if now - self._last_pressed[a] < Duration(seconds=0.4):
-                keys.append(a)
+    def _calculate_velocity(self):
+        """Calculate velocity based on currently pressed keys"""
         linear = 0.0
         angular = 0.0
-        for k in keys:
-            l, a = self.movement_bindings[k]
-            linear += l
-            angular += a
+        active_keys = []
+        
+        with self._state_lock:
+            current_states = dict(self._key_states)
+        
+        for key, is_pressed in current_states.items():
+            if is_pressed and key in self._key_mappings:
+                l, a = self._key_mappings[key]
+                linear += l
+                angular += a
+                
+                # Add to active keys for display
+                key_name = self._get_key_name(key)
+                active_keys.append(key_name)
+        
+        # Apply rate scaling
         if linear > 0:
-            linear = linear * self._forward_rate
-        else:
-            linear = linear * self._backward_rate
-        angular = angular * self._rotation_rate
-        self._angular = angular
+            linear *= self._forward_rate
+        elif linear < 0:
+            linear *= self._backward_rate
+        
+        angular *= self._rotation_rate
+        
+        # Clamp values to reasonable ranges
+        linear = max(-3.0, min(3.0, linear))
+        angular = max(-5.0, min(5.0, angular))
+        
         self._linear = linear
+        self._angular = angular
+        self._active_keys = active_keys
 
-    def _key_pressed(self, keycode):
-        if keycode == ord('q'):
-            self._running = False
-            # TODO(artivis) no rclpy.signal_shutdown ?
-            os.kill(os.getpid(), signal.SIGINT)
-        elif keycode in self.movement_bindings:
-            self._last_pressed[keycode] = self.get_clock().now()
+    def _get_key_name(self, key):
+        """Convert key to readable string"""
+        key_names = {
+            keyboard.Key.up: '↑',
+            keyboard.Key.down: '↓', 
+            keyboard.Key.left: '←',
+            keyboard.Key.right: '→'
+        }
+        
+        if key in key_names:
+            return key_names[key]
+        elif hasattr(key, 'char') and key.char:
+            return key.char.upper()
+        else:
+            return str(key)
+
+    def _make_ackermann_msg(self, speed, steering_angle):
+        """Create Ackermann message"""
+        msg = AckermannDriveStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.drive.speed = speed
+        msg.drive.steering_angle = steering_angle
+        return msg
 
     def _publish(self):
+        """Publish control commands and update GUI"""
+        # Clear and update interface
         self._interface.clear()
-        self._interface.write_line(2, 'Linear: %f, Angular: %f' % (self._linear, self._angular))
-        self._interface.write_line(5, 'Use arrow keys to move, q to exit.')
-        self._interface.refresh()
-
-        if self._publish_stamped_twist:
-            twist = self._make_twist_stamped(self._linear, self._angular)
+        self._interface.draw_title()
+        
+        # Display current status
+        active_str = ' '.join(self._active_keys) if self._active_keys else 'None'
+        
+        # Status display without borders
+        self._interface.write_line(2, "Vehicle Status")
+        
+        # Speed display with color coding
+        speed_color = 1 if self._linear > 0 else (3 if self._linear < 0 else 0)
+        self._interface.write_line(3, f"Speed:    {self._linear:+6.2f} m/s", speed_color)
+        
+        # Steering display with color coding  
+        steer_color = 2 if abs(self._angular) > 0 else 0
+        self._interface.write_line(4, f"Steering: {self._angular:+6.2f} rad/s", steer_color)
+        
+        # Active keys display
+        self._interface.write_line(5, f"Keys:     {active_str}")
+        
+        # Controls display
+        self._interface.write_line(7, "Controls")
+        self._interface.write_line(8, "↑/W: Forward    ↓/S: Backward")
+        self._interface.write_line(9, "←/A: Left       →/D: Right")
+        self._interface.write_line(10, "Q: Quit")
+        
+        # Additional info
+        if self._active_keys:
+            self._interface.write_line(12, "● DRIVING", 1)
         else:
-            twist = self._make_twist(self._linear, self._angular)
+            self._interface.write_line(12, "○ STOPPED", 2)
+            
+        self._interface.write_line(13, f"Rate: {self._hz} Hz | You can type in other apps!")
+        
+        self._interface.refresh()
+        
+        # Publish Ackermann command
+        ackermann_msg = self._make_ackermann_msg(self._linear, self._angular)
+        self._pub_cmd.publish(ackermann_msg)
 
-        self._pub_cmd.publish(twist)
+    def stop(self):
+        """Clean shutdown"""
+        self._running = False
+        if hasattr(self, '_listener'):
+            self._listener.stop()
 
 
 def execute(stdscr):
+    """Main execution function for curses"""
+    if not PYNPUT_AVAILABLE:
+        stdscr.addstr(0, 0, "Error: pynput library is required")
+        stdscr.addstr(1, 0, "Install with: pip install pynput")
+        stdscr.addstr(2, 0, "Press any key to exit...")
+        stdscr.refresh()
+        stdscr.getch()
+        return
+    
     rclpy.init()
-
-    app = SimpleKeyTeleop(TextWindow(stdscr))
-    app.run()
-
-    app.destroy_node()
-    rclpy.shutdown()
+    
+    try:
+        app = PynputCursesKeyTeleop(TextWindow(stdscr, lines=20))
+        app.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if 'app' in locals():
+            app.stop()
+        rclpy.shutdown()
 
 
 def main():
+    """Main entry point"""
+    if not PYNPUT_AVAILABLE:
+        print("Error: pynput library is required")
+        print("Install with: pip install pynput")
+        return
+    
     try:
         curses.wrapper(execute)
     except KeyboardInterrupt:
-        pass
+        print("\nShutdown completed.")
 
 
 if __name__ == '__main__':
