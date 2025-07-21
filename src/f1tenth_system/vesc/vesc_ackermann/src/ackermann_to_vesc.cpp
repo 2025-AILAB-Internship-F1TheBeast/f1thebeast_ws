@@ -37,21 +37,23 @@
 #include <sstream>
 #include <string>
 
-namespace vesc_ackermann
-{
+namespace vesc_ackermann {
 
 using ackermann_msgs::msg::AckermannDriveStamped;
 using std::placeholders::_1;
 using std_msgs::msg::Float64;
 
-AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
-: Node("ackermann_to_vesc_node", options)
-{
+AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions &options)
+    : Node("ackermann_to_vesc_node", options) {
   // get conversion parameters
-  speed_to_erpm_gain_ = declare_parameter("speed_to_erpm_gain").get<double>();
-  speed_to_erpm_offset_ = declare_parameter("speed_to_erpm_offset").get<double>();
-  steering_to_servo_gain_ = declare_parameter("steering_angle_to_servo_gain").get<double>();
-  steering_to_servo_offset_ = declare_parameter("steering_angle_to_servo_offset").get<double>();
+  speed_to_erpm_gain_ =
+      this->declare_parameter<double>("speed_to_erpm_gain", 4614.0);
+  speed_to_erpm_offset_ =
+      this->declare_parameter<double>("speed_to_erpm_offset", 0.0);
+  steering_to_servo_gain_ =
+      this->declare_parameter<double>("steering_angle_to_servo_gain", -1.2135);
+  steering_to_servo_offset_ =
+      this->declare_parameter<double>("steering_angle_to_servo_offset", 0.1667);
 
   // create publishers to vesc electric-RPM (speed) and servo commands
   erpm_pub_ = create_publisher<Float64>("commands/motor/speed", 10);
@@ -59,18 +61,21 @@ AckermannToVesc::AckermannToVesc(const rclcpp::NodeOptions & options)
 
   // subscribe to ackermann topic
   ackermann_sub_ = create_subscription<AckermannDriveStamped>(
-    "ackermann_cmd", 10, std::bind(&AckermannToVesc::ackermannCmdCallback, this, _1));
+      "ackermann_cmd", 10,
+      std::bind(&AckermannToVesc::ackermannCmdCallback, this, _1));
 }
 
-void AckermannToVesc::ackermannCmdCallback(const AckermannDriveStamped::SharedPtr cmd)
-{
+void AckermannToVesc::ackermannCmdCallback(
+    const AckermannDriveStamped::SharedPtr cmd) {
   // calc vesc electric RPM (speed)
   Float64 erpm_msg;
-  erpm_msg.data = speed_to_erpm_gain_ * cmd->drive.speed + speed_to_erpm_offset_;
+  erpm_msg.data =
+      speed_to_erpm_gain_ * cmd->drive.speed + speed_to_erpm_offset_;
 
   // calc steering angle (servo)
   Float64 servo_msg;
-  servo_msg.data = steering_to_servo_gain_ * cmd->drive.steering_angle + steering_to_servo_offset_;
+  servo_msg.data = steering_to_servo_gain_ * cmd->drive.steering_angle +
+                   steering_to_servo_offset_;
 
   // publish
   if (rclcpp::ok()) {
@@ -79,8 +84,8 @@ void AckermannToVesc::ackermannCmdCallback(const AckermannDriveStamped::SharedPt
   }
 }
 
-}  // namespace vesc_ackermann
+} // namespace vesc_ackermann
 
-#include "rclcpp_components/register_node_macro.hpp"  // NOLINT
+#include "rclcpp_components/register_node_macro.hpp" // NOLINT
 
 RCLCPP_COMPONENTS_REGISTER_NODE(vesc_ackermann::AckermannToVesc)
