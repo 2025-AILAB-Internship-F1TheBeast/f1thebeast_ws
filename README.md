@@ -1,5 +1,5 @@
 # F1Tenth System Base Workspace
-> **Keyboard Teleop included**  
+> **Keyboard Teleop included**
 
 ## Basic Launch
 ```bash
