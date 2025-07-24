@@ -14,9 +14,11 @@
 - Project Managing
 - Perception (SLAM & Localization)
 
-**Jonghun Ann**
-- Add here 
-- 
+### Planning
+**Jonghun Ahn**
+- valid learning
+- minimum curvature
+
 **Yongwoo Kwon**
 - Add here
 - 
