@@ -1,5 +1,26 @@
-# F1Tenth System Base Workspace
-> **Keyboard Teleop included**
+# Team F1TheBeast
+> **2025 AILAB Summer Internship Program**  
+> Jisang Yun / Subin Park / Jonghun Ann / Yongwoo Kwon / Yunsang Jeong
+
+## Team Roll
+**Jisang Yun(Team Leader)**
+- Project Managing
+- Perception (SLAM & Localization)
+- Planning (Support)
+- Hardware
+
+**Subin Park**
+- Add here
+- 
+**Jonghun Ann**
+- Add here 
+- 
+**Yongwoo Kwon**
+- Add here
+- 
+**Yunsang Jeong**
+- Add here
+- 
 
 ## Basic Launch
 ```bash
