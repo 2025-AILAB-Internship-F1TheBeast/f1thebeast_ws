@@ -3,7 +3,7 @@
 > Jisang Yun / Subin Park / Jonghun Ann / Yongwoo Kwon / Yunsang Jeong
 
 ## Team Roll
-### Perception
+> ### Perception
 **Jisang Yun(Team Leader)**
 - Project Managing
 - Perception (SLAM & Localization)
@@ -14,7 +14,7 @@
 - Project Managing
 - Perception (SLAM & Localization)
 
-### Planning
+> ### Planning
 **Jonghun Ahn**
 - Valid Learning
 - Minimum Curvature
@@ -23,7 +23,7 @@
 - Add here
 - 
 
-### Control
+> ### Control
 **Yunsang Jeong**
 - Hardware
 - ToDo : Pure pursuit, Stanley, PID
