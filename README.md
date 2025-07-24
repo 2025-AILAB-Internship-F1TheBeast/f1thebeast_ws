@@ -13,6 +13,7 @@
 **Subin Park**
 - Project Managing
 - Perception (SLAM & Localization)
+
 **Jonghun Ann**
 - Add here 
 - 
