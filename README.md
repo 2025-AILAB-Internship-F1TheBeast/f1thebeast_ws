@@ -11,8 +11,8 @@
 - Hardware
 
 **Subin Park**
-- Add here
-- 
+- Project Managing
+- Perception (SLAM & Localization)
 
 ### Planning
 **Jonghun Ahn**
