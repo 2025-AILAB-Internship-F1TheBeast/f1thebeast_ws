@@ -25,7 +25,7 @@
 
 ### Control
 **Yunsang Jeong**
-- Control
+- Hardware
 - ToDo : Pure pursuit, Stanley, PID
 
 ## Basic Launch
