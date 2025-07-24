@@ -16,12 +16,14 @@
 
 ### Planning
 **Jonghun Ahn**
-- valid learning
-- minimum curvature
+- Valid Learning
+- Minimum Curvature
 
 **Yongwoo Kwon**
 - Add here
 - 
+
+### Control
 **Yunsang Jeong**
 - Add here
 - 
