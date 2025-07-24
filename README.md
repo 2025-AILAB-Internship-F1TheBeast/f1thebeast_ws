@@ -25,8 +25,8 @@
 
 ### Control
 **Yunsang Jeong**
-- Add here
-- 
+- Control
+- ToDo : Pure pursuit, Stanley, PID
 
 ## Basic Launch
 ```bash
