@@ -3,6 +3,7 @@
 > Jisang Yun / Subin Park / Jonghun Ann / Yongwoo Kwon / Yunsang Jeong
 
 ## Team Roll
+### Perception
 **Jisang Yun(Team Leader)**
 - Project Managing
 - Perception (SLAM & Localization)
