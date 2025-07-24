@@ -13,9 +13,12 @@
 **Subin Park**
 - Add here
 - 
-**Jonghun Ann**
-- Add here 
-- 
+
+### Planning
+**Jonghun Ahn**
+- valid learning
+- minimum curvature
+
 **Yongwoo Kwon**
 - Add here
 - 
