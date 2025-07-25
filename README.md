@@ -20,8 +20,7 @@
 - Minimum Curvature
 
 **Yongwoo Kwon**
-- Add here
-- 
+- Planning( Global & Learning)
 
 > ### Control
 **Yunsang Jeong**
