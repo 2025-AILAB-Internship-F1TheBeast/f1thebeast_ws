@@ -36,6 +36,12 @@ ros2 launch f1tenth_stack bringup_launch.py
 ```bash
 ros2 run key_teleop key_teleop  
 ```
+**SLAM-Toolbox**
+```bash 
+# slam-toolbox launch
+ros2 launch slam_toolbox online_sync_launch.py slam_params_file:=./src/f1tenth_system/f1tenth_stack/config/slam_params.yaml
+```
+
 **Tips**
 ```
 # F1Tenth aliases 
