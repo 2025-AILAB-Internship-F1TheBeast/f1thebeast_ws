@@ -1,5 +1,6 @@
 # New Keyboard Teleop with ackermann_msgs.msg 
 # Fixed_by Jisang_Yun
+# Modified: Removed WASD, Added S key for Twist/Ackermann toggle
 
 import curses
 import os
@@ -19,6 +20,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_system_default
 from ackermann_msgs.msg import AckermannDriveStamped
+from geometry_msgs.msg import Twist
 
 
 class TextWindow():
@@ -86,29 +88,30 @@ class PynputCursesKeyTeleop(Node):
         self._rotation_rate = 1.0
         self._running = True
         
+        # Message type toggle (True for Ackermann, False for Twist)
+        self._use_ackermann = True
+        
         # Thread-safe key state tracking
         self._key_states = defaultdict(bool)
         self._state_lock = threading.Lock()
         
-        # Key mappings to movement (linear, angular)
+        # Key mappings to movement (linear, angular) - Only arrow keys
         self._key_mappings = {
             keyboard.Key.up: (1.0, 0.0),      # forward
             keyboard.Key.down: (-1.0, 0.0),   # backward
             keyboard.Key.left: (0.0, 5.0),    # left turn
             keyboard.Key.right: (0.0, -5.0),  # right turn
-            keyboard.KeyCode.from_char('w'): (1.0, 0.0),   # forward
-            keyboard.KeyCode.from_char('s'): (-1.0, 0.0),  # backward
-            keyboard.KeyCode.from_char('a'): (0.0, 5.0),   # left turn
-            keyboard.KeyCode.from_char('d'): (0.0, -5.0),  # right turn
         }
         
         self._linear = 0.0
         self._angular = 0.0
         self._active_keys = []
         
-        # ROS publisher
-        self._pub_cmd = self.create_publisher(
+        # ROS publishers
+        self._pub_ackermann = self.create_publisher(
             AckermannDriveStamped, '/ackermann_cmd', qos_profile_system_default)
+        self._pub_twist = self.create_publisher(
+            Twist, '/cmd_vel', qos_profile_system_default)
         
         # Start keyboard listener
         self._start_keyboard_listener()
@@ -121,6 +124,13 @@ class PynputCursesKeyTeleop(Node):
                 self.get_logger().info("Quit key pressed. Shutting down...")
                 self._running = False
                 return False
+            
+            # Handle message type toggle
+            if key == keyboard.KeyCode.from_char('s') or key == keyboard.KeyCode.from_char('S'):
+                self._use_ackermann = not self._use_ackermann
+                msg_type = "Ackermann" if self._use_ackermann else "Twist"
+                self.get_logger().info(f"Switched to {msg_type} mode")
+                return
             
             # Handle movement keys
             if key in self._key_mappings:
@@ -205,6 +215,13 @@ class PynputCursesKeyTeleop(Node):
         msg.drive.steering_angle = steering_angle
         return msg
 
+    def _make_twist_msg(self, linear_vel, angular_vel):
+        """Create Twist message"""
+        msg = Twist()
+        msg.linear.x = linear_vel
+        msg.angular.z = angular_vel
+        return msg
+
     def _publish(self):
         """Publish control commands and update GUI"""
         # Clear and update interface
@@ -214,8 +231,10 @@ class PynputCursesKeyTeleop(Node):
         # Display current status
         active_str = ' '.join(self._active_keys) if self._active_keys else 'None'
         
-        # Status display without borders
-        self._interface.write_line(2, "Vehicle Status")
+        # Message type display
+        msg_type = "Ackermann" if self._use_ackermann else "Twist"
+        msg_color = 1 if self._use_ackermann else 2
+        self._interface.write_line(2, f"Mode: {msg_type}", msg_color)
         
         # Speed display with color coding
         speed_color = 1 if self._linear > 0 else (3 if self._linear < 0 else 0)
@@ -230,9 +249,9 @@ class PynputCursesKeyTeleop(Node):
         
         # Controls display
         self._interface.write_line(7, "Controls")
-        self._interface.write_line(8, "↑/W: Forward    ↓/S: Backward")
-        self._interface.write_line(9, "←/A: Left       →/D: Right")
-        self._interface.write_line(10, "Q: Quit")
+        self._interface.write_line(8, "↑: Forward      ↓: Backward")
+        self._interface.write_line(9, "←: Left         →: Right")
+        self._interface.write_line(10, "S: Toggle Mode  Q: Quit")
         
         # Additional info
         if self._active_keys:
@@ -242,11 +261,19 @@ class PynputCursesKeyTeleop(Node):
             
         self._interface.write_line(13, f"Rate: {self._hz} Hz | You can type in other apps!")
         
+        # Topic info
+        topic = "/ackermann_cmd" if self._use_ackermann else "/cmd_vel"
+        self._interface.write_line(14, f"Publishing to: {topic}")
+        
         self._interface.refresh()
         
-        # Publish Ackermann command
-        ackermann_msg = self._make_ackermann_msg(self._linear, self._angular)
-        self._pub_cmd.publish(ackermann_msg)
+        # Publish appropriate message type
+        if self._use_ackermann:
+            ackermann_msg = self._make_ackermann_msg(self._linear, self._angular)
+            self._pub_ackermann.publish(ackermann_msg)
+        else:
+            twist_msg = self._make_twist_msg(self._linear, self._angular)
+            self._pub_twist.publish(twist_msg)
 
     def stop(self):
         """Clean shutdown"""
