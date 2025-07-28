@@ -23,7 +23,7 @@
 **Yunsang Jeong**
 - Control
 - Done : Pure pursuit, Stanley, PID
-- ToDo : MPC
+- ToDo : MPC Study, Code
 
 ## Basic Launch
 ```bash
