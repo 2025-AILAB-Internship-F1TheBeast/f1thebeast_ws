@@ -35,6 +35,9 @@ ros2 launch f1tenth_stack bringup_launch.py
 ```bash
 ros2 run key_teleop key_teleop  
 ```
+- Update teleop switcher (with key 's' ackermann - twist mode)
+- Speed Profile selection with numpad 1(0.6 m/s) - 9 - 0(4.0 m/s)
+
 **SLAM-Toolbox**
 ```bash 
 # slam-toolbox launch
