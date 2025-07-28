@@ -19,7 +19,7 @@ public:
         marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_waypoints_marker", 1);
 
         // CSV 경로를 상황에 맞게 수정하세요
-        std::string centerline_csv_path = "/home/jys/ROS2/f1tenth_sim/src/full_stack/map/Spielberg_centerline.csv";
+        std::string centerline_csv_path = "/home/jys/ROS2/f1thebeast_ws/src/full_stack/map/Spielberg_centerline.csv";
         load_centerline_waypoints(centerline_csv_path);
 
         // 타이머로 주기적으로 marker publish (예: 0.5초마다)

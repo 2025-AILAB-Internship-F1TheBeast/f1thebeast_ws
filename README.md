@@ -22,7 +22,8 @@
 - 
 **Yunsang Jeong**
 - Control
-- ToDo : Pure pursuit, Stanley, PID
+- Done : Pure pursuit, Stanley, PID
+- ToDo : MPC
 
 ## Basic Launch
 ```bash

@@ -47,7 +47,7 @@ class F1FullStack : public rclcpp::Node
         odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
             "/ego_racecar/odom", 10, std::bind(&F1FullStack::odom_callback, this, std::placeholders::_1));
 
-        std::string centerline_csv_path = "/home/jys/ROS2/f1tenth_sim/src/full_stack/map/Spielberg_centerline.csv";
+        std::string centerline_csv_path = "/home/jys/ROS2/f1thebeast_ws/src/full_stack/map/Spielberg_centerline.csv";
         load_centerline_waypoints(centerline_csv_path);
 
         RCLCPP_INFO(this->get_logger(), "F1FullStack node initialized");
@@ -88,7 +88,7 @@ class F1FullStack : public rclcpp::Node
     // 횡 제어 : Stanley 알고리즘
     float stanley(float car_velocity, std::vector<std::pair<float, float>>& waypoints)
     {
-        const float k = 4.0f; // Stanley controller gain
+        const float k = 2.0f; // Stanley controller gain
         // const float wheel_base = 0.32f;
         const float x_front = 0.05f;
         const float y_front = 0.0f;
