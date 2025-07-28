@@ -83,14 +83,23 @@ class PynputCursesKeyTeleop(Node):
         
         self._interface = interface
         self._hz = 10.0
-        self._max_forward_rate = 0.8
-        self._max_backward_rate = 0.5
-        self._max_rotation_rate = 1.0
         self._running = True
         
+        # Speed profiles (number key -> max speed)
+        self._speed_profiles = {
+            '1': 0.6, '2': 0.8, '3': 1.2, '4': 1.8, '5': 2.4,
+            '6': 2.8, '7': 3.0, '8': 3.2, '9': 3.5, '0': 4.0
+        }
+        self._current_speed_profile = '2'  # Default to profile 2 (0.8 m/s)
+        self._max_forward_rate = self._speed_profiles[self._current_speed_profile]
+        self._max_backward_rate = self._max_forward_rate * 0.7  # Backward is 70% of forward
+        self._max_rotation_rate = 1.0
+        
         # Progressive acceleration settings
-        self._acceleration_time = 2.0  # Time to reach max speed (seconds)
-        self._deceleration_time = 0.5  # Time to stop when key released (seconds)
+        self._acceleration_time = 1.5  # Time to reach max speed (seconds) - only for linear
+        self._deceleration_time = 1.0  # Time to stop when key released (seconds) - only for linear
+        self._steering_acceleration_time = 0.35  # Fast steering response (seconds)
+        self._steering_deceleration_time = 0.3  # Quick steering return to center (seconds)
         
         # Message type toggle (True for Ackermann, False for Twist)
         self._use_ackermann = True
@@ -140,6 +149,14 @@ class PynputCursesKeyTeleop(Node):
                 self.get_logger().info(f"Switched to {msg_type} mode")
                 return
             
+            # Handle speed profile selection
+            if hasattr(key, 'char') and key.char and key.char in self._speed_profiles:
+                self._current_speed_profile = key.char
+                self._max_forward_rate = self._speed_profiles[key.char]
+                self._max_backward_rate = self._max_forward_rate * 0.7
+                self.get_logger().info(f"Speed profile {key.char}: {self._max_forward_rate:.1f} m/s")
+                return
+            
             # Handle movement keys
             if key in self._key_mappings:
                 with self._state_lock:
@@ -182,35 +199,51 @@ class PynputCursesKeyTeleop(Node):
             if is_pressed and key in self._key_mappings:
                 l, a = self._key_mappings[key]
                 
-                # Calculate how long the key has been pressed
-                press_duration = current_time - current_press_times.get(key, current_time)
+                if l != 0:  # Linear movement (forward/backward) - progressive acceleration
+                    # Calculate how long the key has been pressed
+                    press_duration = current_time - current_press_times.get(key, current_time)
+                    
+                    # Progressive acceleration: 0 to 1 over acceleration_time
+                    progress = min(press_duration / self._acceleration_time, 1.0)
+                    
+                    # Apply easing for smoother acceleration (quadratic ease-in)
+                    progress = progress * progress
+                    
+                    # Scale by maximum rates
+                    if l > 0:  # Forward
+                        target_linear += l * progress * self._max_forward_rate
+                    else:  # Backward
+                        target_linear += l * progress * self._max_backward_rate
+                    
+                    # Add to active keys for display with progress
+                    key_name = self._get_key_name(key)
+                    active_keys.append(f"{key_name}({progress:.1%})")
                 
-                # Progressive acceleration: 0 to 1 over acceleration_time
-                progress = min(press_duration / self._acceleration_time, 1.0)
-                
-                # Apply easing for smoother acceleration (quadratic ease-in)
-                progress = progress * progress
-                
-                # Scale by maximum rates
-                if l > 0:  # Forward
-                    target_linear += l * progress * self._max_forward_rate
-                elif l < 0:  # Backward
-                    target_linear += l * progress * self._max_backward_rate
-                
-                if a != 0:  # Turning
-                    target_angular += a * progress * self._max_rotation_rate
-                
-                # Add to active keys for display
-                key_name = self._get_key_name(key)
-                active_keys.append(f"{key_name}({progress:.1%})")
+                if a != 0:  # Angular movement (steering) - fast but progressive
+                    # Calculate how long the steering key has been pressed
+                    press_duration = current_time - current_press_times.get(key, current_time)
+                    
+                    # Fast progressive acceleration for steering: 0 to 1 over steering_acceleration_time
+                    steering_progress = min(press_duration / self._steering_acceleration_time, 1.0)
+                    
+                    # Apply slight easing for smooth steering (less aggressive than linear)
+                    steering_progress = steering_progress * (2 - steering_progress)  # Ease-out
+                    
+                    target_angular += a * steering_progress * self._max_rotation_rate
+                    
+                    # Add to active keys for display with progress
+                    key_name = self._get_key_name(key)
+                    if key_name not in [k.split('(')[0] for k in active_keys]:
+                        active_keys.append(f"{key_name}({steering_progress:.1%})")
         
         # Store target values
         self._target_linear = target_linear
         self._target_angular = target_angular
         
-        # Smooth transition to target velocity (deceleration when no keys pressed)
+        # Smooth transition to target velocity
         dt = 1.0 / self._hz
         
+        # Linear velocity with progressive acceleration/deceleration
         if abs(target_linear) < 0.01:  # No linear input
             # Decelerate to zero
             decel_rate = self._max_forward_rate / self._deceleration_time
@@ -227,16 +260,17 @@ class PynputCursesKeyTeleop(Node):
             else:
                 self._linear = target_linear
         
+        # Angular velocity with fast progressive response
         if abs(target_angular) < 0.01:  # No angular input
-            # Decelerate to zero
-            decel_rate = self._max_rotation_rate / self._deceleration_time
+            # Quick deceleration to zero for steering
+            decel_rate = self._max_rotation_rate / self._steering_deceleration_time
             if self._angular > 0:
                 self._angular = max(0.0, self._angular - decel_rate * dt)
             elif self._angular < 0:
                 self._angular = min(0.0, self._angular + decel_rate * dt)
         else:
-            # Move towards target angular velocity
-            accel_rate = self._max_rotation_rate / self._acceleration_time
+            # Fast response for steering
+            accel_rate = self._max_rotation_rate / self._steering_acceleration_time
             diff = target_angular - self._angular
             if abs(diff) > accel_rate * dt:
                 self._angular += accel_rate * dt * (1 if diff > 0 else -1)
@@ -294,37 +328,48 @@ class PynputCursesKeyTeleop(Node):
         msg_color = 1 if self._use_ackermann else 2
         self._interface.write_line(2, f"Mode: {msg_type}", msg_color)
         
+        # Speed profile display
+        profile_color = 1
+        self._interface.write_line(3, f"Speed Profile: {self._current_speed_profile} ({self._max_forward_rate:.1f}m/s)", profile_color)
+        
         # Speed display with color coding
         speed_color = 1 if self._linear > 0 else (3 if self._linear < 0 else 0)
-        self._interface.write_line(3, f"Speed:    {self._linear:+6.2f} m/s", speed_color)
+        self._interface.write_line(4, f"Speed:    {self._linear:+6.2f} m/s", speed_color)
         
         # Steering display with color coding  
         steer_color = 2 if abs(self._angular) > 0 else 0
-        self._interface.write_line(4, f"Steering: {self._angular:+6.2f} rad/s", steer_color)
+        self._interface.write_line(5, f"Steering: {self._angular:+6.2f} rad/s", steer_color)
         
         # Active keys display
-        self._interface.write_line(5, f"Keys:     {active_str}")
+        self._interface.write_line(6, f"Keys:     {active_str}")
         
         # Controls display
-        self._interface.write_line(7, "Controls")
-        self._interface.write_line(8, "↑: Forward      ↓: Backward")
-        self._interface.write_line(9, "←: Left         →: Right")
-        self._interface.write_line(10, "S: Toggle Mode  Q: Quit")
+        self._interface.write_line(8, "Movement Controls:")
+        self._interface.write_line(9, "↑: Forward      ↓: Backward")
+        self._interface.write_line(10, "←: Left         →: Right")
+        
+        # Speed profile controls
+        self._interface.write_line(11, "Speed Profiles (1-0):")
+        self._interface.write_line(12, "1:0.6  2:0.8  3:1.2  4:1.8  5:2.4")
+        self._interface.write_line(13, "6:2.8  7:3.0  8:3.2  9:3.5  0:4.0")
+        
+        # Other controls
+        self._interface.write_line(14, "S: Toggle Mode  Q: Quit")
         
         # Progressive acceleration info
-        self._interface.write_line(11, f"Accel: {self._acceleration_time:.1f}s | Decel: {self._deceleration_time:.1f}s")
+        self._interface.write_line(15, f"Linear: {self._acceleration_time:.1f}s | Steering: {self._steering_acceleration_time:.1f}s")
         
         # Additional info
         if self._active_keys:
-            self._interface.write_line(12, "● DRIVING", 1)
+            self._interface.write_line(17, "● DRIVING", 1)
         else:
-            self._interface.write_line(12, "○ STOPPED", 2)
+            self._interface.write_line(17, "○ STOPPED", 2)
             
-        self._interface.write_line(13, f"Rate: {self._hz} Hz | You can type in other apps!")
+        self._interface.write_line(18, f"Rate: {self._hz} Hz | You can type in other apps!")
         
         # Topic info
         topic = "/ackermann_cmd" if self._use_ackermann else "/cmd_vel"
-        self._interface.write_line(14, f"Publishing to: {topic}")
+        self._interface.write_line(19, f"Publishing to: {topic}")
         
         self._interface.refresh()
         
