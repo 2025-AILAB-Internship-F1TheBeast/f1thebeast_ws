@@ -83,28 +83,36 @@ class PynputCursesKeyTeleop(Node):
         
         self._interface = interface
         self._hz = 10.0
-        self._forward_rate = 0.8
-        self._backward_rate = 0.5
-        self._rotation_rate = 1.0
+        self._max_forward_rate = 0.8
+        self._max_backward_rate = 0.5
+        self._max_rotation_rate = 1.0
         self._running = True
+        
+        # Progressive acceleration settings
+        self._acceleration_time = 2.0  # Time to reach max speed (seconds)
+        self._deceleration_time = 0.5  # Time to stop when key released (seconds)
         
         # Message type toggle (True for Ackermann, False for Twist)
         self._use_ackermann = True
         
-        # Thread-safe key state tracking
+        # Thread-safe key state tracking with timestamps
         self._key_states = defaultdict(bool)
+        self._key_press_times = defaultdict(float)
         self._state_lock = threading.Lock()
         
         # Key mappings to movement (linear, angular) - Only arrow keys
         self._key_mappings = {
             keyboard.Key.up: (1.0, 0.0),      # forward
             keyboard.Key.down: (-1.0, 0.0),   # backward
-            keyboard.Key.left: (0.0, 5.0),    # left turn
-            keyboard.Key.right: (0.0, -5.0),  # right turn
+            keyboard.Key.left: (0.0, 1.0),    # left turn
+            keyboard.Key.right: (0.0, -1.0),  # right turn
         }
         
+        # Current velocity values
         self._linear = 0.0
         self._angular = 0.0
+        self._target_linear = 0.0
+        self._target_angular = 0.0
         self._active_keys = []
         
         # ROS publishers
@@ -135,6 +143,8 @@ class PynputCursesKeyTeleop(Node):
             # Handle movement keys
             if key in self._key_mappings:
                 with self._state_lock:
+                    if not self._key_states[key]:  # Key just pressed
+                        self._key_press_times[key] = time.time()
                     self._key_states[key] = True
 
         def on_release(key):
@@ -157,38 +167,86 @@ class PynputCursesKeyTeleop(Node):
             time.sleep(1.0 / self._hz)
 
     def _calculate_velocity(self):
-        """Calculate velocity based on currently pressed keys"""
-        linear = 0.0
-        angular = 0.0
+        """Calculate velocity based on currently pressed keys with progressive acceleration"""
+        target_linear = 0.0
+        target_angular = 0.0
         active_keys = []
+        current_time = time.time()
         
         with self._state_lock:
             current_states = dict(self._key_states)
+            current_press_times = dict(self._key_press_times)
         
+        # Calculate target velocities based on pressed keys
         for key, is_pressed in current_states.items():
             if is_pressed and key in self._key_mappings:
                 l, a = self._key_mappings[key]
-                linear += l
-                angular += a
+                
+                # Calculate how long the key has been pressed
+                press_duration = current_time - current_press_times.get(key, current_time)
+                
+                # Progressive acceleration: 0 to 1 over acceleration_time
+                progress = min(press_duration / self._acceleration_time, 1.0)
+                
+                # Apply easing for smoother acceleration (quadratic ease-in)
+                progress = progress * progress
+                
+                # Scale by maximum rates
+                if l > 0:  # Forward
+                    target_linear += l * progress * self._max_forward_rate
+                elif l < 0:  # Backward
+                    target_linear += l * progress * self._max_backward_rate
+                
+                if a != 0:  # Turning
+                    target_angular += a * progress * self._max_rotation_rate
                 
                 # Add to active keys for display
                 key_name = self._get_key_name(key)
-                active_keys.append(key_name)
+                active_keys.append(f"{key_name}({progress:.1%})")
         
-        # Apply rate scaling
-        if linear > 0:
-            linear *= self._forward_rate
-        elif linear < 0:
-            linear *= self._backward_rate
+        # Store target values
+        self._target_linear = target_linear
+        self._target_angular = target_angular
         
-        angular *= self._rotation_rate
+        # Smooth transition to target velocity (deceleration when no keys pressed)
+        dt = 1.0 / self._hz
+        
+        if abs(target_linear) < 0.01:  # No linear input
+            # Decelerate to zero
+            decel_rate = self._max_forward_rate / self._deceleration_time
+            if self._linear > 0:
+                self._linear = max(0.0, self._linear - decel_rate * dt)
+            elif self._linear < 0:
+                self._linear = min(0.0, self._linear + decel_rate * dt)
+        else:
+            # Move towards target linear velocity
+            accel_rate = max(self._max_forward_rate, self._max_backward_rate) / self._acceleration_time
+            diff = target_linear - self._linear
+            if abs(diff) > accel_rate * dt:
+                self._linear += accel_rate * dt * (1 if diff > 0 else -1)
+            else:
+                self._linear = target_linear
+        
+        if abs(target_angular) < 0.01:  # No angular input
+            # Decelerate to zero
+            decel_rate = self._max_rotation_rate / self._deceleration_time
+            if self._angular > 0:
+                self._angular = max(0.0, self._angular - decel_rate * dt)
+            elif self._angular < 0:
+                self._angular = min(0.0, self._angular + decel_rate * dt)
+        else:
+            # Move towards target angular velocity
+            accel_rate = self._max_rotation_rate / self._acceleration_time
+            diff = target_angular - self._angular
+            if abs(diff) > accel_rate * dt:
+                self._angular += accel_rate * dt * (1 if diff > 0 else -1)
+            else:
+                self._angular = target_angular
         
         # Clamp values to reasonable ranges
-        linear = max(-3.0, min(3.0, linear))
-        angular = max(-5.0, min(5.0, angular))
+        self._linear = max(-3.0, min(3.0, self._linear))
+        self._angular = max(-1.5, min(1.5, self._angular))
         
-        self._linear = linear
-        self._angular = angular
         self._active_keys = active_keys
 
     def _get_key_name(self, key):
@@ -252,6 +310,9 @@ class PynputCursesKeyTeleop(Node):
         self._interface.write_line(8, "↑: Forward      ↓: Backward")
         self._interface.write_line(9, "←: Left         →: Right")
         self._interface.write_line(10, "S: Toggle Mode  Q: Quit")
+        
+        # Progressive acceleration info
+        self._interface.write_line(11, f"Accel: {self._acceleration_time:.1f}s | Decel: {self._deceleration_time:.1f}s")
         
         # Additional info
         if self._active_keys:
