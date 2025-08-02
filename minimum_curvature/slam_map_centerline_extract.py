@@ -183,16 +183,30 @@ def extract_main_loop_after_erosion(filled_mask, erosion_iter=1):
 
 def visualize_all(raw_img, floodfill, centerline_mask):
     fig, axes = plt.subplots(1, 3, figsize=(20, 6))
-    images = [raw_img, floodfill, centerline_mask]
-    titles = ["original", "Flood Fill (track only)", "centerline extracted"]
-    cmaps = ['gray', 'gray', 'gray']
+    
+    # 첫 번째: 원본 이미지
+    axes[0].imshow(raw_img, cmap='gray', origin='lower')
+    axes[0].set_title("original")
+    axes[0].axis("off")
 
-    for ax, img, title, cmap in zip(axes, images, titles, cmaps):
-        ax.imshow(img, cmap=cmap, origin='lower')
-        ax.set_title(title)
-        ax.axis("off")
+    # 두 번째: Flood Fill된 트랙 이미지
+    axes[1].imshow(floodfill, cmap='gray', origin='lower')
+    axes[1].set_title("Flood Fill (track only)")
+    axes[1].axis("off")
+
+    # 세 번째: floodfill 위에 centerline 빨간색으로 덧그리기
+    # → floodfill을 컬러로 바꾸고 centerline 위치에 빨간색 픽셀을 넣음
+    color_overlay = cv2.cvtColor(floodfill, cv2.COLOR_GRAY2RGB)
+    red_mask = centerline_mask > 0
+    color_overlay[red_mask] = [255, 0, 0]  # 빨간색
+
+    axes[2].imshow(color_overlay, origin='lower')
+    axes[2].set_title("centerline overlayed")
+    axes[2].axis("off")
+
     plt.tight_layout()
     plt.show()
+
 
 # ======== 실행 ========
 if __name__ == "__main__":
