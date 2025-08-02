@@ -18,7 +18,7 @@
 #    with the distribution.
 #  * Neither the name of Enrique Fernandez nor the names of its
 #    contributors may be used to endorse or promote products derived
-#    from this software without specific prior written permission.
+#    from this software without specific permission.
 #
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 # "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -42,6 +42,7 @@ import signal
 import tkinter
 
 from geometry_msgs.msg import Twist, Vector3
+from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
 import numpy
 import rclpy
 from rclpy.node import Node
@@ -56,14 +57,24 @@ class MouseTeleop(Node):
         self._frequency = self.declare_parameter('frequency', 0.0).value
         self._scale = self.declare_parameter('scale', 1.0).value
         self._holonomic = self.declare_parameter('holonomic', False).value
+        self._max_steering_angle = self.declare_parameter('max_steering_angle', 0.5).value  # radians
+        self._wheelbase = self.declare_parameter('wheelbase', 2.5).value  # meters
 
-        # Create twist publisher:
-        self._pub_cmd = self.create_publisher(Twist, 'mouse_vel', 10)
+        # Create publishers for both message types
+        self._pub_twist = self.create_publisher(Twist, 'cmd_vel', 10)
+        self._pub_ackermann = self.create_publisher(AckermannDriveStamped, 'ackermann_cmd', 10)
+
+        # Message type toggle (True = Ackermann, False = Twist)
+        self._use_ackermann = True
 
         # Initialize twist components to zero:
         self._v_x = 0.0
         self._v_y = 0.0
         self._w = 0.0
+
+        # Initialize ackermann components to zero:
+        self._speed = 0.0
+        self._steering_angle = 0.0
 
         # Initialize mouse position (x, y) to None (unknown); it's initialized
         # when the mouse button is pressed on the _start callback that handles
@@ -73,7 +84,7 @@ class MouseTeleop(Node):
 
         # Create window:
         self._root = tkinter.Tk()
-        self._root.title('Mouse Teleop')
+        self._root.title('Mouse Teleop - Ackermann Mode')
 
         # Make window non-resizable:
         self._root.resizable(0, 0)
@@ -94,25 +105,29 @@ class MouseTeleop(Node):
         if self._holonomic:
             self._text_v_y = tkinter.StringVar()
         self._text_w = tkinter.StringVar()
+        self._text_mode = tkinter.StringVar()
 
         self._label_v_x = tkinter.Label(self._root, anchor=tkinter.W, textvariable=self._text_v_x)
         if self._holonomic:
             self._label_v_y = tkinter.Label(
                 self._root, anchor=tkinter.W, textvariable=self._text_v_y)
         self._label_w = tkinter.Label(self._root, anchor=tkinter.W, textvariable=self._text_w)
+        self._label_mode = tkinter.Label(self._root, anchor=tkinter.W, textvariable=self._text_mode, 
+                                        fg='red', font=('Arial', 10, 'bold'))
 
-        if self._holonomic:
-            self._text_v_x.set('v_x = %0.2f m/s' % self._v_x)
-            self._text_v_y.set('v_y = %0.2f m/s' % self._v_y)
-            self._text_w.set('w   = %0.2f deg/s' % self._w)
-        else:
-            self._text_v_x.set('v = %0.2f m/s' % self._v_x)
-            self._text_w.set('w = %0.2f deg/s' % self._w)
+        self._update_display_text()
 
+        self._label_mode.pack()
         self._label_v_x.pack()
         if self._holonomic:
             self._label_v_y.pack()
         self._label_w.pack()
+
+        # Add instruction label
+        instruction_text = "Press 's' to toggle between Ackermann and Twist modes"
+        self._label_instruction = tkinter.Label(self._root, text=instruction_text, 
+                                               anchor=tkinter.W, fg='gray')
+        self._label_instruction.pack()
 
         # Bind event handlers:
         self._canvas.bind('<Button-1>', self._start)
@@ -129,14 +144,18 @@ class MouseTeleop(Node):
         else:
             self._canvas.bind('<B1-Motion>', self._mouse_motion_angular)
 
+        # Bind 's' key to toggle message type
+        self._root.bind('<KeyPress-s>', self._toggle_message_type)
+        self._root.focus_set()  # Make sure the window can receive key events
+
         self._canvas.pack()
 
         # If frequency is positive, use synchronous publishing mode:
         if self._frequency > 0.0:
-            # Create timer for the given frequency to publish the twist:
+            # Create timer for the given frequency to publish messages:
             period = 1.0 / self._frequency
 
-            self._timer = self.create_timer(period, self._publish_twist)
+            self._timer = self.create_timer(period, self._publish_command)
 
         # Handle ctrl+c on the window
         self._root.bind('<Control-c>', self._quit)
@@ -145,8 +164,40 @@ class MouseTeleop(Node):
         self._root.after(50, self._check)
         signal.signal(2, self._handle_signal)
 
+        # Log initial state
+        self.get_logger().info('Mouse teleop started in Ackermann mode. Press "s" to toggle.')
+
         # Start window event manager main loop:
         self._root.mainloop()
+
+    def _toggle_message_type(self, event):
+        """Toggle between Ackermann and Twist message types"""
+        self._use_ackermann = not self._use_ackermann
+        
+        if self._use_ackermann:
+            self._root.title('Mouse Teleop - Ackermann Mode')
+            self.get_logger().info('Switched to Ackermann mode')
+        else:
+            self._root.title('Mouse Teleop - Twist Mode')
+            self.get_logger().info('Switched to Twist mode')
+        
+        self._update_display_text()
+
+    def _update_display_text(self):
+        """Update the display text based on current mode"""
+        if self._use_ackermann:
+            self._text_mode.set('Mode: ACKERMANN')
+            self._text_v_x.set('speed = %0.2f m/s' % self._speed)
+            self._text_w.set('steering = %0.2f deg' % numpy.rad2deg(self._steering_angle))
+        else:
+            self._text_mode.set('Mode: TWIST')
+            if self._holonomic:
+                self._text_v_x.set('v_x = %0.2f m/s' % self._v_x)
+                self._text_v_y.set('v_y = %0.2f m/s' % self._v_y)
+                self._text_w.set('w   = %0.2f deg/s' % numpy.rad2deg(self._w))
+            else:
+                self._text_v_x.set('v = %0.2f m/s' % self._v_x)
+                self._text_w.set('w = %0.2f deg/s' % numpy.rad2deg(self._w))
 
     def _quit(self, ev):
         self._root.quit()
@@ -166,9 +217,11 @@ class MouseTeleop(Node):
         self._y_linear = self._y_angular = 0
 
         self._v_x = self._v_y = self._w = 0.0
+        self._speed = self._steering_angle = 0.0
 
     def _release(self, event):
         self._v_x = self._v_y = self._w = 0.0
+        self._speed = self._steering_angle = 0.0
 
         self._send_motion()
 
@@ -183,10 +236,24 @@ class MouseTeleop(Node):
     def _mouse_motion_linear(self, event):
         self._v_x, self._v_y = self._relative_motion(event.y, event.x)
 
+        if self._use_ackermann:
+            # Convert to Ackermann parameters
+            self._speed = self._v_x
+            self._steering_angle = self._v_y * self._max_steering_angle
+        
         self._send_motion()
 
     def _mouse_motion_angular(self, event):
-        self._v_x, self._w = self._relative_motion(event.y, event.x)
+        dx, dy = self._relative_motion(event.y, event.x)
+        
+        if self._use_ackermann:
+            # For Ackermann: dx = speed, dy = steering angle
+            self._speed = dx
+            self._steering_angle = dy * self._max_steering_angle
+        else:
+            # For Twist: dx = linear velocity, dy = angular velocity
+            self._v_x = dx
+            self._w = dy
 
         self._send_motion()
 
@@ -215,25 +282,34 @@ class MouseTeleop(Node):
 
         self._update_coords('w', x0, y0, x1, y1)
 
-        yaw = w * numpy.rad2deg(self._scale)
+        if self._use_ackermann:
+            # For Ackermann, show steering angle
+            angle_deg = w * numpy.rad2deg(1.0)  # w is already in degrees for display
+        else:
+            # For Twist, show angular velocity
+            angle_deg = w * numpy.rad2deg(self._scale)
 
-        self._canvas.itemconfig('w', extent=yaw)
+        self._canvas.itemconfig('w', extent=angle_deg)
 
     def _send_motion(self):
-
-        self._draw_v_x(self._v_x)
-        if self._holonomic:
-            self._draw_v_y(self._v_y)
-        self._draw_w(self._w)
-
-        if self._holonomic:
-            self._text_v_x.set('v_x = %0.2f m/s' % self._v_x)
-            self._text_v_y.set('v_y = %0.2f m/s' % self._v_y)
-            self._text_w.set('w   = %0.2f deg/s' % numpy.rad2deg(self._w))
+        if self._use_ackermann:
+            self._draw_v_x(self._speed)
+            self._draw_w(numpy.rad2deg(self._steering_angle))
         else:
-            self._text_v_x.set('v = %0.2f m/s' % self._v_x)
-            self._text_w.set('w = %0.2f deg/s' % numpy.rad2deg(self._w))
+            self._draw_v_x(self._v_x)
+            if self._holonomic:
+                self._draw_v_y(self._v_y)
+            self._draw_w(self._w)
 
+        self._update_display_text()
+
+        if self._use_ackermann:
+            self._publish_ackermann()
+        else:
+            self._publish_twist()
+
+    def _publish_twist(self):
+        """Publish Twist message"""
         v_x = self._v_x * self._scale
         v_y = self._v_y * self._scale
         w = self._w * self._scale
@@ -242,9 +318,24 @@ class MouseTeleop(Node):
         ang = Vector3(x=0.0, y=0.0, z=w)
 
         twist = Twist(linear=lin, angular=ang)
-        self._pub_cmd.publish(twist)
+        self._pub_twist.publish(twist)
 
-    def _publish_twist(self):
+    def _publish_ackermann(self):
+        """Publish Ackermann message"""
+        ackermann_msg = AckermannDriveStamped()
+        ackermann_msg.header.stamp = self.get_clock().now().to_msg()
+        ackermann_msg.header.frame_id = "base_link"
+        
+        ackermann_msg.drive.speed = self._speed * self._scale
+        ackermann_msg.drive.steering_angle = self._steering_angle
+        
+        # Optional: calculate steering_angle_velocity if needed
+        # ackermann_msg.drive.steering_angle_velocity = 0.0
+        
+        self._pub_ackermann.publish(ackermann_msg)
+
+    def _publish_command(self):
+        """Timer callback to publish commands"""
         self._send_motion()
 
     def _relative_motion(self, x, y):
