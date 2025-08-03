@@ -1,1 +1,1 @@
-sudo python setup.py install
+python3 setup.py install --user
