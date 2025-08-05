@@ -1,4 +1,0 @@
-,RMS Error,Max Error,Mean Error,Std Deviation
-cross_track_error,0.037859,0.132845,0.026237,0.027294
-yaw_error,1.889053,8.32951,1.310213,1.874031
-speed_error,0.082899,1.3315,0.023925,0.079372
