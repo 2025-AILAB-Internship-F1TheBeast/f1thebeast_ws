@@ -18,7 +18,7 @@ Control::Control(float stanley_gain, int lookahead_heading) : Node("controller_n
 
     // 초기 위치 설정을 위한 일회성 odometry 구독
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/ego_racecar/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
+        "/pf/pose/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
 
     RCLCPP_INFO(this->get_logger(), "Control node initialized with stanley gain: %.2f, lookahead heading: %d", stanley_gain_, lookahead_heading_);
 }
@@ -169,7 +169,7 @@ std::pair<float, float> Control::vehicle_control(float global_car_x, float globa
     // raceline의 속도 값을 목표 속도로 사용
     float target_speed = waypoints[closest_idx].vx;
     float drive_speed = pid_controller(target_speed, current_speed);
-    drive_speed = target_speed;
+    drive_speed = target_speed * 0.5;
     // float stanley_steer = local_planner_based_stanley_controller(current_speed, local_points);
     float stanley_steer = stanley_controller(current_speed, local_points);
     // stanley_steer = 0.0;
@@ -233,7 +233,7 @@ void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPt
         // 초기 odometry 구독 해제하고 일반 odometry 구독 시작
         initial_odom_subscription_.reset();
         odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/ego_racecar/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
+            "/pf/pose/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
         
     } catch (const std::exception &e) {
         RCLCPP_ERROR(this->get_logger(), "Error during initial_odom_callback: %s", e.what());

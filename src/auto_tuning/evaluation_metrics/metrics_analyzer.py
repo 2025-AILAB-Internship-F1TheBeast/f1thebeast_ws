@@ -21,13 +21,139 @@ class MetricsAnalyzer:
     def load_data(self):
         """Load CSV data into pandas DataFrame"""
         try:
-            self.df = pd.read_csv(self.csv_file_path)
+            # CSV 파일 로드 시 데이터 타입 명시
+            dtype_dict = {
+                'timestamp': float,
+                'cross_track_error': float,
+                'yaw_error': float,
+                'speed_error': float,
+                'max_cross_track_error': float,
+                'max_yaw_error': float,
+                'max_speed_error': float,
+                'current_x': float,
+                'current_y': float,
+                'current_yaw': float,
+                'current_speed': float,
+                'target_speed': float,
+                'closest_waypoint_idx': int
+            }
+            
+            self.df = pd.read_csv(self.csv_file_path, dtype=dtype_dict)
             print(f"Data loaded successfully. Shape: {self.df.shape}")
             print(f"Columns: {list(self.df.columns)}")
+            
+            # target_speed 보정 (0.625배에서 실제 값으로 변환)
+            if 'target_speed' in self.df.columns:
+                original_target_speed_mean = self.df['target_speed'].mean()
+                self.df['target_speed'] = self.df['target_speed'] / 0.625
+                corrected_target_speed_mean = self.df['target_speed'].mean()
+                print(f"Target speed corrected: {original_target_speed_mean:.3f} -> {corrected_target_speed_mean:.3f} (divided by 0.625)")
+                
+                # speed_error도 다시 계산 (target_speed가 변경되었으므로)
+                if 'current_speed' in self.df.columns:
+                    original_speed_error_mean = self.df['speed_error'].mean()
+                    self.df['speed_error'] = np.abs(self.df['current_speed'] - self.df['target_speed'])
+                    corrected_speed_error_mean = self.df['speed_error'].mean()
+                    print(f"Speed error recalculated: {original_speed_error_mean:.3f} -> {corrected_speed_error_mean:.3f}")
+            
+            # 데이터 타입 확인
+            print(f"Data types:")
+            for col in ['timestamp', 'cross_track_error', 'yaw_error', 'speed_error']:
+                if col in self.df.columns:
+                    print(f"  {col}: {self.df[col].dtype}")
+            
+            # Check for required columns
+            required_cols = ['timestamp', 'cross_track_error', 'yaw_error', 'speed_error']
+            missing_cols = [col for col in required_cols if col not in self.df.columns]
+            if missing_cols:
+                print(f"Warning: Missing required columns: {missing_cols}")
+            else:
+                print("All required columns found!")
+                
+            # NaN 값 확인 및 처리
+            nan_counts = self.df.isnull().sum()
+            if nan_counts.sum() > 0:
+                print(f"Warning: Found NaN values:")
+                for col, count in nan_counts.items():
+                    if count > 0:
+                        print(f"  {col}: {count} NaN values")
+                
+                # NaN 값이 있는 행 제거
+                original_len = len(self.df)
+                self.df = self.df.dropna()
+                removed_rows = original_len - len(self.df)
+                if removed_rows > 0:
+                    print(f"Removed {removed_rows} rows with NaN values")
+                    
         except FileNotFoundError:
             print(f"Error: File {self.csv_file_path} not found")
+        except ValueError as e:
+            print(f"Error loading data - Value Error: {e}")
+            print("Attempting to load without dtype specification...")
+            try:
+                # 타입 지정 없이 다시 시도
+                self.df = pd.read_csv(self.csv_file_path)
+                print(f"Data loaded successfully without dtype. Shape: {self.df.shape}")
+                
+                # 수동으로 타입 변환 시도
+                numeric_cols = ['timestamp', 'cross_track_error', 'yaw_error', 'speed_error', 
+                            'max_cross_track_error', 'max_yaw_error', 'max_speed_error',
+                            'current_x', 'current_y', 'current_yaw', 'current_speed', 'target_speed']
+                
+                for col in numeric_cols:
+                    if col in self.df.columns:
+                        try:
+                            self.df[col] = pd.to_numeric(self.df[col], errors='coerce')
+                            print(f"Converted {col} to numeric")
+                        except Exception as convert_error:
+                            print(f"Failed to convert {col} to numeric: {convert_error}")
+                
+                # target_speed 보정 (0.625배에서 실제 값으로 변환)
+                if 'target_speed' in self.df.columns:
+                    original_target_speed_mean = self.df['target_speed'].mean()
+                    self.df['target_speed'] = self.df['target_speed'] / 0.625
+                    corrected_target_speed_mean = self.df['target_speed'].mean()
+                    print(f"Target speed corrected: {original_target_speed_mean:.3f} -> {corrected_target_speed_mean:.3f} (divided by 0.625)")
+                    
+                    # speed_error도 다시 계산 (target_speed가 변경되었으므로)
+                    if 'current_speed' in self.df.columns:
+                        original_speed_error_mean = self.df['speed_error'].mean()
+                        self.df['speed_error'] = np.abs(self.df['current_speed'] - self.df['target_speed'])
+                        corrected_speed_error_mean = self.df['speed_error'].mean()
+                        print(f"Speed error recalculated: {original_speed_error_mean:.3f} -> {corrected_speed_error_mean:.3f}")
+                
+                # closest_waypoint_idx를 정수로 변환
+                if 'closest_waypoint_idx' in self.df.columns:
+                    try:
+                        self.df['closest_waypoint_idx'] = pd.to_numeric(self.df['closest_waypoint_idx'], errors='coerce').astype('Int64')
+                        print("Converted closest_waypoint_idx to integer")
+                    except Exception as convert_error:
+                        print(f"Failed to convert closest_waypoint_idx to integer: {convert_error}")
+                
+                # 변환 후 NaN 값 확인
+                nan_counts = self.df.isnull().sum()
+                if nan_counts.sum() > 0:
+                    print(f"Warning: Found NaN values after conversion:")
+                    for col, count in nan_counts.items():
+                        if count > 0:
+                            print(f"  {col}: {count} NaN values")
+                    
+                    # NaN 값이 있는 행 제거
+                    original_len = len(self.df)
+                    self.df = self.df.dropna()
+                    removed_rows = original_len - len(self.df)
+                    if removed_rows > 0:
+                        print(f"Removed {removed_rows} rows with NaN values after conversion")
+                
+                print("Manual type conversion completed")
+                
+            except Exception as fallback_error:
+                print(f"Error loading data even without dtype: {fallback_error}")
+                
         except Exception as e:
             print(f"Error loading data: {e}")
+            import traceback
+            traceback.print_exc()
     
     def calculate_rms(self, values):
         """
@@ -124,7 +250,7 @@ class MetricsAnalyzer:
                 'yaw_error_max': yaw_error_max,
                 'speed_error_max': speed_error_max
             })
-        
+        print(f"Analysis results: {results}")
         return results
     
     def print_results(self, results):
@@ -246,10 +372,62 @@ class MetricsAnalyzer:
         print("DATA SUMMARY")
         print("="*50)
         print(f"Total data points: {len(self.df)}")
-        print(f"Time range: {self.df['timestamp'].min():.3f} - {self.df['timestamp'].max():.3f} seconds")
-        print(f"Duration: {self.df['timestamp'].max() - self.df['timestamp'].min():.3f} seconds")
-        print("\nBasic Statistics:")
-        print(self.df[['cross_track_error', 'yaw_error', 'speed_error', 'current_speed']].describe())
+        
+        # timestamp 컬럼 타입 확인 및 처리
+        if 'timestamp' in self.df.columns:
+            try:
+                # timestamp가 숫자형인지 확인
+                if pd.api.types.is_numeric_dtype(self.df['timestamp']):
+                    time_min = self.df['timestamp'].min()
+                    time_max = self.df['timestamp'].max()
+                    duration = time_max - time_min
+                    print(f"Time range: {time_min:.3f} - {time_max:.3f} seconds")
+                    print(f"Duration: {duration:.3f} seconds")
+                else:
+                    print(f"Timestamp column type: {self.df['timestamp'].dtype}")
+                    print("Converting timestamp to numeric...")
+                    # 숫자로 변환 시도
+                    self.df['timestamp'] = pd.to_numeric(self.df['timestamp'], errors='coerce')
+                    if not self.df['timestamp'].isnull().all():
+                        time_min = self.df['timestamp'].min()
+                        time_max = self.df['timestamp'].max()
+                        duration = time_max - time_min
+                        print(f"Time range: {time_min:.3f} - {time_max:.3f} seconds")
+                        print(f"Duration: {duration:.3f} seconds")
+                    else:
+                        print("Failed to convert timestamp to numeric")
+            except Exception as e:
+                print(f"Error processing timestamp: {e}")
+                print(f"Timestamp sample values: {self.df['timestamp'].head()}")
+        else:
+            print("Timestamp column not found")
+        
+        # Check if speed columns exist
+        speed_cols = []
+        if 'current_speed' in self.df.columns:
+            speed_cols.append('current_speed')
+        if 'target_speed' in self.df.columns:
+            speed_cols.append('target_speed')
+            
+        summary_cols = ['cross_track_error', 'yaw_error', 'speed_error'] + speed_cols
+        available_cols = [col for col in summary_cols if col in self.df.columns]
+        
+        if available_cols:
+            print("\nBasic Statistics:")
+            try:
+                print(self.df[available_cols].describe())
+            except Exception as e:
+                print(f"Error generating statistics: {e}")
+                # 개별 컬럼별로 시도
+                for col in available_cols:
+                    try:
+                        print(f"\n{col} statistics:")
+                        print(self.df[col].describe())
+                    except Exception as col_error:
+                        print(f"  Error with {col}: {col_error}")
+        else:
+            print("No valid columns found for statistics")
+        
         print("="*50)
     
     def save_analysis_to_csv(self, results_list, output_filename="analysis_results.csv"):
@@ -459,164 +637,6 @@ class MetricsAnalyzer:
               f"Mean: {np.mean(cross_track_values):.6f}, "
               f"Std: {np.std(cross_track_values):.6f}")
     
-    def plot_track_heatmap(self, segment_results, track_name="Catalunya", save_plot=False):
-        """
-        Plot track map with cross track error RMS as heatmap overlay
-        
-        Args:
-            segment_results (list): Results from analyze_track_segments
-            track_name (str): Name of the track (Catalunya, etc.)
-            save_plot (bool): Whether to save the plot
-        """
-        if not segment_results:
-            print("No segment results to plot")
-            return
-        
-        # Path to track files
-        map_dir = f"../map/f1tenth_racetracks/{track_name}"
-        map_image_path = f"{map_dir}/{track_name}_map.png"
-        centerline_path = f"{map_dir}/{track_name}_centerline.csv"
-        raceline_path = f"{map_dir}/{track_name}_raceline.csv"
-        
-        # Check if files exist
-        if not os.path.exists(map_image_path):
-            print(f"Map image not found: {map_image_path}")
-            return
-        
-        try:
-            import cv2
-        except ImportError:
-            print("OpenCV not installed. Install with: pip install opencv-python")
-            return
-        
-        # Load map image
-        map_image = cv2.imread(map_image_path)
-        if map_image is None:
-            print(f"Failed to load map image: {map_image_path}")
-            return
-        
-        map_image_rgb = cv2.cvtColor(map_image, cv2.COLOR_BGR2RGB)
-        
-        # Load centerline or raceline if available
-        track_points = None
-        if os.path.exists(centerline_path):
-            try:
-                centerline_df = pd.read_csv(centerline_path)
-                if 'x_m' in centerline_df.columns and 'y_m' in centerline_df.columns:
-                    track_points = centerline_df[['x_m', 'y_m']].values
-                elif 'x' in centerline_df.columns and 'y' in centerline_df.columns:
-                    track_points = centerline_df[['x', 'y']].values
-            except Exception as e:
-                print(f"Error loading centerline: {e}")
-        
-        if track_points is None and os.path.exists(raceline_path):
-            try:
-                raceline_df = pd.read_csv(raceline_path)
-                if 'x_m' in raceline_df.columns and 'y_m' in raceline_df.columns:
-                    track_points = raceline_df[['x_m', 'y_m']].values
-                elif 'x' in raceline_df.columns and 'y' in raceline_df.columns:
-                    track_points = raceline_df[['x', 'y']].values
-            except Exception as e:
-                print(f"Error loading raceline: {e}")
-        
-        # Extract RMS values
-        cross_track_rms_values = [result['cross_track_rms'] for result in segment_results]
-        min_rms = min(cross_track_rms_values)
-        max_rms = max(cross_track_rms_values)
-        
-        # Normalize RMS values for colormap
-        normalized_rms = [(rms - min_rms) / (max_rms - min_rms) if max_rms > min_rms else 0.5 
-                         for rms in cross_track_rms_values]
-        
-        # Create figure
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
-        
-        # Plot 1: Original map
-        ax1.imshow(map_image_rgb)
-        ax1.set_title(f'{track_name} Track Map', fontsize=16, fontweight='bold')
-        ax1.axis('off')
-        
-        # Plot 2: Map with heatmap overlay
-        ax2.imshow(map_image_rgb, alpha=0.7)
-        
-        if track_points is not None:
-            # Map track coordinates to image coordinates
-            # This is a simplified mapping - you might need to adjust based on map scale/offset
-            height, width = map_image_rgb.shape[:2]
-            
-            # Normalize track coordinates to image space
-            x_coords = track_points[:, 0]
-            y_coords = track_points[:, 1]
-            
-            # Simple linear mapping (might need adjustment for specific tracks)
-            x_min, x_max = x_coords.min(), x_coords.max()
-            y_min, y_max = y_coords.min(), y_coords.max()
-            
-            # Map to image coordinates with margins
-            margin = 0.1
-            x_img = ((x_coords - x_min) / (x_max - x_min)) * width * (1 - 2*margin) + width * margin
-            y_img = height - (((y_coords - y_min) / (y_max - y_min)) * height * (1 - 2*margin) + height * margin)
-            
-            # Divide track into segments and color by RMS
-            num_segments = len(segment_results)
-            points_per_segment = len(track_points) // num_segments
-            
-            # Create colormap
-            cmap = plt.cm.RdYlGn_r  # Red (high error) to Green (low error)
-            
-            for i, (segment_result, norm_rms) in enumerate(zip(segment_results, normalized_rms)):
-                start_idx = i * points_per_segment
-                end_idx = (i + 1) * points_per_segment if i < num_segments - 1 else len(track_points)
-                
-                if start_idx < len(x_img) and end_idx <= len(x_img):
-                    segment_x = x_img[start_idx:end_idx]
-                    segment_y = y_img[start_idx:end_idx]
-                    
-                    color = cmap(norm_rms)
-                    ax2.plot(segment_x, segment_y, color=color, linewidth=8, alpha=0.8,
-                            label=f'Seg {i+1}: RMS={segment_result["cross_track_rms"]:.4f}')
-            
-            # Add colorbar
-            sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=min_rms, vmax=max_rms))
-            sm.set_array([])
-            cbar = plt.colorbar(sm, ax=ax2, shrink=0.6, aspect=20)
-            cbar.set_label('Cross Track Error RMS', rotation=270, labelpad=20, fontsize=12)
-        
-        else:
-            # If no track data, create a simple visualization
-            ax2.text(0.5, 0.5, 'Track data not available\nShowing segment RMS values only', 
-                    transform=ax2.transAxes, ha='center', va='center', 
-                    fontsize=14, bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            
-            # Add RMS values as text
-            for i, result in enumerate(segment_results):
-                y_pos = 0.9 - i * 0.05
-                if y_pos > 0.1:
-                    ax2.text(0.02, y_pos, f'Segment {result["segment"]}: RMS = {result["cross_track_rms"]:.4f}',
-                            transform=ax2.transAxes, fontsize=10,
-                            bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
-        
-        ax2.set_title(f'{track_name} Track - Cross Track Error RMS Heatmap', fontsize=16, fontweight='bold')
-        ax2.axis('off')
-        
-        plt.tight_layout()
-        
-        if save_plot:
-            plot_filename = f"{track_name.lower()}_track_heatmap_{len(segment_results)}segments.png"
-            plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
-            print(f"Track heatmap saved as {plot_filename}")
-        
-        plt.show()
-        
-        # Print segment summary
-        print(f"\n{track_name} Track Segment Analysis:")
-        print("=" * 60)
-        print(f"{'Segment':<8} {'RMS':<12} {'Color Intensity':<15}")
-        print("-" * 60)
-        for i, (result, norm_rms) in enumerate(zip(segment_results, normalized_rms)):
-            intensity = "Low" if norm_rms < 0.33 else "Medium" if norm_rms < 0.67 else "High"
-            print(f"{result['segment']:<8} {result['cross_track_rms']:<12.6f} {intensity:<15}")
-    
     def plot_vehicle_path_heatmap(self, start_time=None, end_time=None, save_plot=False, output_dir=None, reference_path_file=None):
         """
         Plot vehicle path with error metrics as heatmap overlay and reference path as dashed line
@@ -632,25 +652,13 @@ class MetricsAnalyzer:
             print("No data loaded")
             return
 
-        # Check position columns
-        position_cols = None
-        if 'x' in self.df.columns and 'y' in self.df.columns:
-            position_cols = ('x', 'y')
-        elif 'current_x' in self.df.columns and 'current_y' in self.df.columns:
-            position_cols = ('current_x', 'current_y')
-        elif 'x_m' in self.df.columns and 'y_m' in self.df.columns:
-            position_cols = ('x_m', 'y_m')
-        elif 'pos_x' in self.df.columns and 'pos_y' in self.df.columns:
-            position_cols = ('pos_x', 'pos_y')
-        elif 'position_x' in self.df.columns and 'position_y' in self.df.columns:
-            position_cols = ('position_x', 'position_y')
-
-        if position_cols is None:
-            print("Error: Position data not found in CSV file")
+        # Check for position columns in the uploaded CSV format
+        if 'current_x' not in self.df.columns or 'current_y' not in self.df.columns:
+            print("Error: Position data (current_x, current_y) not found in CSV file")
             print(f"Available columns: {list(self.df.columns)}")
             return
 
-        print(f"Using position columns: {position_cols}")
+        print("Using position columns: current_x, current_y")
 
         # Filter data if time range is specified
         if start_time is not None and end_time is not None:
@@ -665,8 +673,8 @@ class MetricsAnalyzer:
             return
 
         # Extract position and error data
-        x_pos = data[position_cols[0]].values
-        y_pos = data[position_cols[1]].values
+        x_pos = data['current_x'].values
+        y_pos = data['current_y'].values
         cross_track_error = data['cross_track_error'].values
         yaw_error = data['yaw_error'].values
         speed_error = data['speed_error'].values
@@ -797,6 +805,103 @@ class MetricsAnalyzer:
         print(f"Yaw Error - Max: {np.max(np.abs(yaw_error)):.4f}, Mean: {np.mean(np.abs(yaw_error)):.4f}")
         print(f"Speed Error - Max: {np.max(np.abs(speed_error)):.4f}, Mean: {np.mean(np.abs(speed_error)):.4f}")
     
+    def plot_speed_analysis(self, start_time=None, end_time=None, save_plot=False, output_dir=None):
+        """
+        Plot speed analysis with current_speed vs target_speed
+        
+        Args:
+            start_time (float, optional): Start timestamp for plotting
+            end_time (float, optional): End timestamp for plotting
+            save_plot (bool): Whether to save the plot
+            output_dir (str, optional): Directory to save the plot
+        """
+        if self.df is None:
+            print("No data loaded")
+            return
+        
+        # Check if speed columns exist
+        if 'current_speed' not in self.df.columns or 'target_speed' not in self.df.columns:
+            print("Error: Speed data (current_speed, target_speed) not found in CSV file")
+            return
+        
+        # Filter data if time range is specified
+        if start_time is not None and end_time is not None:
+            data = self.filter_by_timestamp(start_time, end_time)
+            time_range_str = f"({start_time:.1f}s - {end_time:.1f}s)"
+        else:
+            data = self.df
+            time_range_str = "(All data)"
+        
+        if data is None or len(data) == 0:
+            print("No data to plot")
+            return
+        
+        # Create figure with subplots
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # Plot 1: Speed vs Time
+        axes[0, 0].plot(data['timestamp'], data['current_speed'], 'b-', linewidth=2, label='Current Speed', alpha=0.8)
+        axes[0, 0].plot(data['timestamp'], data['target_speed'], 'r--', linewidth=2, label='Target Speed', alpha=0.8)
+        axes[0, 0].set_title(f'Speed Tracking {time_range_str}', fontsize=14, fontweight='bold')
+        axes[0, 0].set_xlabel('Time (s)')
+        axes[0, 0].set_ylabel('Speed (m/s)')
+        axes[0, 0].grid(True, alpha=0.3)
+        axes[0, 0].legend()
+        
+        # Plot 2: Speed Error vs Time
+        axes[0, 1].plot(data['timestamp'], data['speed_error'], 'g-', linewidth=2)
+        axes[0, 1].axhline(y=0, color='k', linestyle='-', alpha=0.3)
+        speed_error_rms = self.calculate_rms(data['speed_error'])
+        axes[0, 1].set_title(f'Speed Error (RMS: {speed_error_rms:.3f})', fontsize=14, fontweight='bold')
+        axes[0, 1].set_xlabel('Time (s)')
+        axes[0, 1].set_ylabel('Speed Error (m/s)')
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # Plot 3: Current vs Target Speed Scatter
+        axes[1, 0].scatter(data['target_speed'], data['current_speed'], alpha=0.6, s=10)
+        min_speed = min(data['target_speed'].min(), data['current_speed'].min())
+        max_speed = max(data['target_speed'].max(), data['current_speed'].max())
+        axes[1, 0].plot([min_speed, max_speed], [min_speed, max_speed], 'r--', linewidth=2, label='Perfect Tracking')
+        axes[1, 0].set_title('Current vs Target Speed', fontsize=14, fontweight='bold')
+        axes[1, 0].set_xlabel('Target Speed (m/s)')
+        axes[1, 0].set_ylabel('Current Speed (m/s)')
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].legend()
+        axes[1, 0].axis('equal')
+        
+        # Plot 4: Speed Error Histogram
+        axes[1, 1].hist(data['speed_error'], bins=50, alpha=0.7, color='green', edgecolor='black')
+        axes[1, 1].axvline(x=0, color='red', linestyle='--', linewidth=2, label='Zero Error')
+        axes[1, 1].axvline(x=data['speed_error'].mean(), color='orange', linestyle='-', linewidth=2, label=f'Mean: {data["speed_error"].mean():.3f}')
+        axes[1, 1].set_title('Speed Error Distribution', fontsize=14, fontweight='bold')
+        axes[1, 1].set_xlabel('Speed Error (m/s)')
+        axes[1, 1].set_ylabel('Frequency')
+        axes[1, 1].grid(True, alpha=0.3)
+        axes[1, 1].legend()
+        
+        plt.tight_layout()
+        
+        if save_plot:
+            if start_time is not None and end_time is not None:
+                plot_filename = f"speed_analysis_{start_time:.1f}_{end_time:.1f}s.png"
+            else:
+                plot_filename = "speed_analysis_all_data.png"
+            if output_dir:
+                plot_filename = os.path.join(output_dir, plot_filename)
+            plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+            print(f"Speed analysis plot saved as {plot_filename}")
+        
+        plt.show()
+        
+        # Print speed statistics
+        print(f"\nSpeed Analysis Statistics {time_range_str}:")
+        print("=" * 60)
+        print(f"Target Speed - Min: {data['target_speed'].min():.2f}, Max: {data['target_speed'].max():.2f}, Mean: {data['target_speed'].mean():.2f}")
+        print(f"Current Speed - Min: {data['current_speed'].min():.2f}, Max: {data['current_speed'].max():.2f}, Mean: {data['current_speed'].mean():.2f}")
+        print(f"Speed Error - Min: {data['speed_error'].min():.3f}, Max: {data['speed_error'].max():.3f}, Mean: {data['speed_error'].mean():.3f}")
+        print(f"Speed Error RMS: {speed_error_rms:.3f}")
+        print(f"Speed Error Std: {data['speed_error'].std():.3f}")
+    
 def main():
     """Main function to demonstrate usage"""
     
@@ -816,6 +921,10 @@ def main():
     parser.add_argument('--no-plots', 
                        action='store_true', 
                        help='Skip plot generation')
+    parser.add_argument('--segments', 
+                       type=int, 
+                       default=10, 
+                       help='Number of segments for track analysis (default: 10)')
     
     args = parser.parse_args()
     
@@ -850,13 +959,8 @@ def main():
         results_filtered = analyzer.analyze_metrics(
             start_time=args.start_time, 
             end_time=args.end_time, 
-            calculate_max_values=False
+            calculate_max_values=True
         )
-        analyzer.print_results(results_filtered)
-        all_results.append(results_filtered)
-    else:
-        # Default: Analyze 0 to 15 seconds range
-        results_filtered = analyzer.analyze_metrics(start_time=0, end_time=15, calculate_max_values=False)
         analyzer.print_results(results_filtered)
         all_results.append(results_filtered)
     
@@ -885,6 +989,14 @@ def main():
     analyzer.print_results(results_second_half)
     all_results.append(results_second_half)
     
+    # Track segment analysis (텍스트 출력만)
+    print("\n" + "="*50)
+    print(f"TRACK SEGMENT ANALYSIS ({args.segments} segments)")
+    print("="*50)
+    segment_results = analyzer.analyze_track_segments(num_segments=args.segments)
+    if segment_results:
+        analyzer.print_segment_results(segment_results)
+    
     # Save all analysis results to CSV in output directory
     try:
         timestamp_str = csv_basename.split('_')[-2]
@@ -898,13 +1010,13 @@ def main():
     
     # Plot generation (skip if --no-plots flag is used)
     if not args.no_plots:
-        # Plot metrics for the specific time range
+        # 첫 번째 figure: Plot metrics (cross track error, yaw error, speed error over time)
         if args.start_time is not None and args.end_time is not None:
             analyzer.plot_metrics(start_time=args.start_time, end_time=args.end_time, save_plot=True, output_dir=output_dir)
         else:
-            analyzer.plot_metrics(start_time=7.495, end_time=11.795, save_plot=True, output_dir=output_dir)
+            analyzer.plot_metrics(save_plot=True, output_dir=output_dir)
         
-        # Plot vehicle path with error heatmaps
+        # 네 번째 figure: Plot vehicle path with error heatmaps
         print("\n" + "="*50)
         print("GENERATING VEHICLE PATH HEATMAPS")
         print("="*50)
@@ -914,7 +1026,7 @@ def main():
         if args.start_time is not None and args.end_time is not None:
             analyzer.plot_vehicle_path_heatmap(start_time=args.start_time, end_time=args.end_time, save_plot=True, output_dir=output_dir, reference_path_file=reference_path_file)
         else:
-            analyzer.plot_vehicle_path_heatmap(start_time=7.495, end_time=11.795, save_plot=True, output_dir=output_dir, reference_path_file=reference_path_file)
+            analyzer.plot_vehicle_path_heatmap(save_plot=True, output_dir=output_dir, reference_path_file=reference_path_file)
     
     print(f"\nAnalysis completed! All files saved in: {output_dir}")
 

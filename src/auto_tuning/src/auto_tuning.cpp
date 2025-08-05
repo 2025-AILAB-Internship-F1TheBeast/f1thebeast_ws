@@ -208,7 +208,7 @@ std::pair<float, float> Auto_tuning::vehicle_control(float global_car_x, float g
     // raceline의 속도 값을 목표 속도로 사용
     float target_speed = waypoints[closest_idx].vx;
     float drive_speed = pid_controller(target_speed, current_speed);
-    drive_speed = target_speed;
+    drive_speed = target_speed*0.625;
     // float stanley_steer = local_planner_based_stanley_controller(current_speed, local_points);
     float stanley_steer = stanley_controller(current_speed, local_points);
     // stanley_steer = 0.0;
