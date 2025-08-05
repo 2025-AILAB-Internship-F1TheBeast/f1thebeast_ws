@@ -3,6 +3,7 @@
 
 #include "ackermann_msgs/msg/ackermann_drive_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "visualization_msgs/msg/marker.hpp"
@@ -65,15 +66,15 @@ class Control : public rclcpp::Node {
 public:
     rclcpp::TimerBase::SharedPtr marker_timer_;
 
-    Control(float stanley_gain = 13.0f, int lookahead_heading = 3);  // lookahead_heading 파라미터 추가
+    Control(float stanley_gain = 13.0f, int lookahead_heading = 3, bool enable_metrics = false);  // metrics 기록 여부 추가
     ~Control();
 
 private:
     // ROS 관련 멤버
     std::string odom_topic;
     std::string drive_topic;
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr initial_odom_subscription_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr initial_pose_subscription_;
     rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr drive_publisher_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr lookahead_waypoints_marker_pub_;
     
@@ -103,6 +104,7 @@ private:
     std::vector<RacelineWaypoint> global_raceline_waypoints_;
 
     // Evaluation Metrics 관련
+    bool enable_metrics_;  // metrics 기록 여부
     std::vector<EvaluationMetrics> metrics_data_;
     std::ofstream metrics_file_;
     std::chrono::steady_clock::time_point start_time_;
@@ -121,8 +123,8 @@ private:
     float pid_controller(float target_speed, float current_speed);
 
     // 콜백 및 유틸리티 함수들
-    void pose_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
-    void initial_pose_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
+    void pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr pose_msg);
+    void initial_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr pose_msg);
     size_t find_closest_waypoint_local_search(float global_current_x, float global_current_y);
     void load_raceline_waypoints(const std::string& csv_path);
     void publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints);
@@ -132,7 +134,7 @@ private:
     void initialize_metrics_csv();
     float calculate_cross_track_error(float car_x, float car_y, size_t closest_idx);
     float calculate_yaw_error(float car_yaw, size_t closest_idx);
-    void record_metrics(float car_x, float car_y, float car_yaw, size_t closest_idx, float target_speed);
+    void record_metrics(float car_x, float car_y, float car_yaw, size_t closest_idx);
     void save_metrics_to_csv();
 };
 

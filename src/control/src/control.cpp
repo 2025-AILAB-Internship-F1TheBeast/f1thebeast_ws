@@ -1,9 +1,9 @@
 #include "control.hpp"
 #include <filesystem>
 
-Control::Control(float stanley_gain, int lookahead_heading) : Node("controller_node"), odom_topic("/odom"), drive_topic("/drive"), 
+Control::Control(float stanley_gain, int lookahead_heading, bool enable_metrics) : Node("controller_node"), odom_topic("/odom"), drive_topic("/drive"), 
     pid_integral_(0.0f), pid_prev_error_(0.0f), stanley_gain_(stanley_gain), lookahead_heading_(lookahead_heading), current_closest_idx_(0), previous_velocity_(1.0f),
-    previous_time_ns(this->now()), max_cross_track_error_(0.0f), max_yaw_error_(0.0f), max_speed_error_(0.0f) {
+    previous_time_ns(this->now()), enable_metrics_(enable_metrics), max_cross_track_error_(0.0f), max_yaw_error_(0.0f), max_speed_error_(0.0f) {
     
     drive_publisher_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(drive_topic, 10);
     lookahead_waypoints_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("lookahead_waypoints_marker", 1);
@@ -12,22 +12,27 @@ Control::Control(float stanley_gain, int lookahead_heading) : Node("controller_n
     std::string raceline_csv_path = "/home/jys/ROS2/f1thebeast_ws/src/control/map/f1tenth_racetracks/Catalunya/Catalunya_raceline.csv";
     load_raceline_waypoints(raceline_csv_path);
 
-    // Evaluation metrics 초기화
-    initialize_metrics_csv();
-    start_time_ = std::chrono::steady_clock::now();
+    // Evaluation metrics 초기화 (enable_metrics가 true일 때만)
+    if (enable_metrics_) {
+        initialize_metrics_csv();
+        start_time_ = std::chrono::steady_clock::now();
+    }
 
     // 초기 위치 설정을 위한 일회성 odometry 구독
-    initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
+    initial_pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         "/pf/viz/inferred_pose", 10, std::bind(&Control::initial_pose_callback, this, std::placeholders::_1));
 
-    RCLCPP_INFO(this->get_logger(), "Control node initialized with stanley gain: %.2f, lookahead heading: %d", stanley_gain_, lookahead_heading_);
+    RCLCPP_INFO(this->get_logger(), "Control node initialized with stanley gain: %.2f, lookahead heading: %d, metrics: %s", 
+                stanley_gain_, lookahead_heading_, enable_metrics_ ? "enabled" : "disabled");
 }
 
 Control::~Control() {
-    // CSV 파일 저장 및 닫기
-    save_metrics_to_csv();
-    if (metrics_file_.is_open()) {
-        metrics_file_.close();
+    // CSV 파일 저장 및 닫기 (metrics가 활성화된 경우에만)
+    if (enable_metrics_) {
+        save_metrics_to_csv();
+        if (metrics_file_.is_open()) {
+            metrics_file_.close();
+        }
     }
 }
 
@@ -162,21 +167,24 @@ std::pair<float, float> Control::vehicle_control(float global_car_x, float globa
 
     // raceline의 속도 값을 목표 속도로 사용
     float target_speed = waypoints[closest_idx].vx;
-    float drive_speed = target_speed * 0.5;
+    float drive_speed = target_speed * 0.125;
     // float stanley_steer = local_planner_based_stanley_controller(current_speed, local_points);
-    float stanley_steer = stanley_controller(current_speed, local_points);
+    float stanley_steer = stanley_controller(drive_speed, local_points);
     // stanley_steer = 0.0;
     // drive_speed = 0.0;
     return std::make_pair(stanley_steer, drive_speed);
 }
 
 // Perception의 localization 패키지로부터 차량의 pose를 받아오기
-void Control::initial_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr pose_msg) {
+void Control::initial_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr pose_msg) {
     try {
+        // callback이 제대로 작동하는지 확인
+        RCLCPP_INFO(this->get_logger(), "Initial pose callback triggered");
+
         // base_link 좌표계의 위치와 자세 추출
-        float base_link_x = pose_msg->pose.pose.position.x;
-        float base_link_y = pose_msg->pose.pose.position.y;
-        float global_current_yaw = tf2::getYaw(pose_msg->pose.pose.orientation);
+        float base_link_x = pose_msg->pose.position.x;
+        float base_link_y = pose_msg->pose.position.y;
+        float global_current_yaw = tf2::getYaw(pose_msg->pose.orientation);
         
         // base_link에서 front_wheel로 변환 (wheelbase만큼 앞쪽으로 이동)
         const float wheelbase = 0.3302f;
@@ -202,8 +210,8 @@ void Control::initial_pose_callback(const geometry_msgs::msg::PoseWithCovariance
         
         // 초기 odometry 구독 해제하고 일반 odometry 구독 시작
         initial_pose_subscription_.reset();
-        pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-            "/pf/pose/odom", 10, std::bind(&Control::pose_callback, this, std::placeholders::_1));
+        pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/pf/viz/inferred_pose", 10, std::bind(&Control::pose_callback, this, std::placeholders::_1));
 
     } catch (const std::exception &e) {
         RCLCPP_ERROR(this->get_logger(), "Error during initial_pose_callback: %s", e.what());
@@ -241,13 +249,16 @@ size_t Control::find_closest_waypoint_local_search(float global_current_x, float
     return closest_idx;
 }
 
-void Control::pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr pose_msg) {
+void Control::pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr pose_msg) {
     try {
+        // callback이 제대로 작동하는지 확인
+        RCLCPP_INFO(this->get_logger(), "Pose callback triggered");
+
         // base_link 좌표계의 위치와 자세 추출
-        float base_link_x = pose_msg->pose.pose.position.x;
-        float base_link_y = pose_msg->pose.pose.position.y;
-        float global_current_yaw = tf2::getYaw(pose_msg->pose.pose.orientation);
-        
+        float base_link_x = pose_msg->pose.position.x;
+        float base_link_y = pose_msg->pose.position.y;
+        float global_current_yaw = tf2::getYaw(pose_msg->pose.orientation);
+
         // base_link에서 front_wheel로 변환 (wheelbase만큼 앞쪽으로 이동)
         const float wheelbase = 0.3302f;
         float global_current_x = base_link_x + wheelbase * std::cos(global_current_yaw);
@@ -269,9 +280,10 @@ void Control::pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped:
 
         auto [steering_angle, drive_speed] = vehicle_control(global_current_x, global_current_y, global_current_yaw, lookahead_waypoints, 0);
 
-        // Evaluation metrics 기록
-        float target_speed = global_raceline_waypoints_[closest_idx].vx;
-        record_metrics(global_current_x, global_current_y, global_current_yaw, closest_idx, target_speed);
+        // Evaluation metrics 기록 (metrics가 활성화된 경우에만)
+        if (enable_metrics_) {
+            record_metrics(global_current_x, global_current_y, global_current_yaw, closest_idx);
+        }
 
         auto drive_msg = ackermann_msgs::msg::AckermannDriveStamped();
         drive_msg.drive.steering_angle = steering_angle;
@@ -454,7 +466,11 @@ float Control::calculate_yaw_error(float car_yaw, size_t closest_idx) {
     return yaw_error;
 }
 
-void Control::record_metrics(float car_x, float car_y, float car_yaw , size_t closest_idx, float target_speed) {
+// pose_callback에서 호출되는 메트릭 기록 함수
+// 차량의 현재 위치, 자세와 가장 가까운 waypoint 인덱스를 기록
+// 속도는 없음
+
+void Control::record_metrics(float car_x, float car_y, float car_yaw , size_t closest_idx) {
     // 현재 시간 계산 (시작 시간으로부터의 경과 시간)
     auto current_time = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time_);
@@ -466,19 +482,15 @@ void Control::record_metrics(float car_x, float car_y, float car_yaw , size_t cl
     // 에러 계산
     metrics.cross_track_error = calculate_cross_track_error(car_x, car_y, closest_idx);
     metrics.yaw_error = calculate_yaw_error(car_yaw, closest_idx);
-    metrics.speed_error = std::abs(car_speed - target_speed);
 
     // Max 값 업데이트
     max_cross_track_error_ = std::max(max_cross_track_error_, std::abs(metrics.cross_track_error));
     max_yaw_error_ = std::max(max_yaw_error_, std::abs(metrics.yaw_error));
-    max_speed_error_ = std::max(max_speed_error_, metrics.speed_error);
 
     // 현재 상태 저장
     metrics.current_x = car_x;
     metrics.current_y = car_y;
     metrics.current_yaw = car_yaw;
-    metrics.current_speed = car_speed;
-    metrics.target_speed = target_speed;
     metrics.closest_waypoint_idx = closest_idx;
 
     // 메모리에 저장
@@ -489,24 +501,19 @@ void Control::record_metrics(float car_x, float car_y, float car_yaw , size_t cl
         metrics_file_ << metrics.timestamp << ","
                       << metrics.cross_track_error << ","
                       << metrics.yaw_error << ","
-                      << metrics.speed_error << ","
                       << max_cross_track_error_ << ","
                       << max_yaw_error_ << ","
-                      << max_speed_error_ << ","
                       << metrics.current_x << ","
                       << metrics.current_y << ","
                       << metrics.current_yaw << ","
-                      << metrics.current_speed << ","
-                      << metrics.target_speed << ","
                       << metrics.closest_waypoint_idx << "\n";
         metrics_file_.flush(); // 즉시 파일에 쓰기
     }
 
     // 로그 출력 (max 값 포함)
-    RCLCPP_DEBUG(this->get_logger(), "Metrics - CTE: %.3f (Max: %.3f), YE: %.3f (Max: %.3f), SE: %.3f (Max: %.3f)", 
+    RCLCPP_DEBUG(this->get_logger(), "Metrics - CTE: %.3f (Max: %.3f), YE: %.3f (Max: %.3f)", 
                  metrics.cross_track_error, max_cross_track_error_,
-                 metrics.yaw_error, max_yaw_error_,
-                 metrics.speed_error, max_speed_error_);
+                 metrics.yaw_error, max_yaw_error_);
 }
 
 void Control::save_metrics_to_csv() {
@@ -518,11 +525,9 @@ void Control::save_metrics_to_csv() {
         for (const auto& metrics : metrics_data_) {
             avg_cte += std::abs(metrics.cross_track_error);
             avg_ye += std::abs(metrics.yaw_error);
-            avg_se += metrics.speed_error;
 
             rms_cte += metrics.cross_track_error * metrics.cross_track_error;
             rms_ye += metrics.yaw_error * metrics.yaw_error;
-            rms_se += metrics.speed_error * metrics.speed_error;
         }
 
         size_t n = metrics_data_.size();
@@ -535,7 +540,6 @@ void Control::save_metrics_to_csv() {
         RCLCPP_INFO(this->get_logger(), "=== Evaluation Metrics Summary ===");
         RCLCPP_INFO(this->get_logger(), "Cross Track Error - Avg: %.3f, Max: %.3f, RMS: %.3f", avg_cte, max_cross_track_error_, rms_cte);
         RCLCPP_INFO(this->get_logger(), "Yaw Error - Avg: %.3f, Max: %.3f, RMS: %.3f", avg_ye, max_yaw_error_, rms_ye);
-        RCLCPP_INFO(this->get_logger(), "Speed Error - Avg: %.3f, Max: %.3f, RMS: %.3f", avg_se, max_speed_error_, rms_se);
         RCLCPP_INFO(this->get_logger(), "Total data points: %zu", n);
     }
 }
