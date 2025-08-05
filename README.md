@@ -6,7 +6,7 @@
 > ### Perception
 **Jisang Yun(Team Leader)**
 - Project Managing
-- Perception (SLAM & Localization)
+- Perception (Localization)
 - Planning (Support)
 - Hardware
 
