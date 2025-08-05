@@ -10,10 +10,11 @@ void print_usage() {
     std::cout << "Options:" << std::endl;
     std::cout << "  --stanley-gain <value>      Set stanley controller gain (default: 3.5)" << std::endl;
     std::cout << "  --lookahead-heading <value> Set lookahead heading index (default: 3)" << std::endl;
+    std::cout << "  --enable-metrics            Enable metrics recording" << std::endl;
     std::cout << "  --help                      Show this help message" << std::endl;
     std::cout << std::endl;
     std::cout << "Example:" << std::endl;
-    std::cout << "  ros2 run control control_node --stanley-gain 9.9 --lookahead-heading 10" << std::endl;
+    std::cout << "  ros2 run control control_node --stanley-gain 9.9 --lookahead-heading 10 --enable-metrics" << std::endl;
 }
 
 int main(int argc, char **argv) {
@@ -21,6 +22,7 @@ int main(int argc, char **argv) {
     
     float stanley_gain = 3.5f; // 기본값
     int lookahead_heading = 3;  // 기본값
+    bool enable_metrics = false; // 기본값: metrics 비활성화
     
     // Command line argument 파싱
     for (int i = 1; i < argc; i++) {
@@ -58,6 +60,10 @@ int main(int argc, char **argv) {
                 return 1;
             }
         }
+        else if (strcmp(argv[i], "--enable-metrics") == 0) {
+            enable_metrics = true;
+            std::cout << "Metrics recording enabled" << std::endl;
+        }
         else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage();
             return 0;
@@ -72,8 +78,9 @@ int main(int argc, char **argv) {
     std::cout << "Starting control node with:" << std::endl;
     std::cout << "  Stanley gain: " << stanley_gain << std::endl;
     std::cout << "  Lookahead heading index: " << lookahead_heading << std::endl;
+    std::cout << "  Metrics recording: " << (enable_metrics ? "enabled" : "disabled") << std::endl;
     
-    rclcpp::spin(std::make_shared<Control>(stanley_gain, lookahead_heading));
+    rclcpp::spin(std::make_shared<Control>(stanley_gain, lookahead_heading, enable_metrics));
     rclcpp::shutdown();
     return 0;
 }

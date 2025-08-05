@@ -1,9 +1,9 @@
 #include "control.hpp"
 #include <filesystem>
 
-Control::Control(float stanley_gain, int lookahead_heading) : Node("controller_node"), odom_topic("/odom"), drive_topic("/drive"), 
+Control::Control(float stanley_gain, int lookahead_heading, bool enable_metrics) : Node("controller_node"), odom_topic("/odom"), drive_topic("/drive"), 
     pid_integral_(0.0f), pid_prev_error_(0.0f), stanley_gain_(stanley_gain), lookahead_heading_(lookahead_heading), current_closest_idx_(0), previous_velocity_(1.0f),
-    previous_time_ns(this->now()), max_cross_track_error_(0.0f), max_yaw_error_(0.0f), max_speed_error_(0.0f) {
+    previous_time_ns(this->now()), enable_metrics_(enable_metrics), max_cross_track_error_(0.0f), max_yaw_error_(0.0f), max_speed_error_(0.0f) {
     
     drive_publisher_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(drive_topic, 10);
     lookahead_waypoints_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("lookahead_waypoints_marker", 1);
@@ -12,22 +12,26 @@ Control::Control(float stanley_gain, int lookahead_heading) : Node("controller_n
     std::string raceline_csv_path = "/home/jys/ROS2/f1thebeast_ws/src/control/map/f1tenth_racetracks/Catalunya/Catalunya_raceline.csv";
     load_raceline_waypoints(raceline_csv_path);
 
-    // Evaluation metrics 초기화
-    initialize_metrics_csv();
-    start_time_ = std::chrono::steady_clock::now();
+    // Evaluation metrics 초기화 (enable_metrics가 true일 때만)
+    if (enable_metrics_) {
+        initialize_metrics_csv();
+        start_time_ = std::chrono::steady_clock::now();
+    }
 
     // 초기 위치 설정을 위한 일회성 odometry 구독
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
         "/ego_racecar/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
 
-    RCLCPP_INFO(this->get_logger(), "Control node initialized with stanley gain: %.2f, lookahead heading: %d", stanley_gain_, lookahead_heading_);
+    RCLCPP_INFO(this->get_logger(), "Control node initialized with stanley gain: %.2f, lookahead heading: %d, metrics: %s", stanley_gain_, lookahead_heading_, enable_metrics_ ? "enabled" : "disabled");
 }
 
 Control::~Control() {
-    // CSV 파일 저장 및 닫기
-    save_metrics_to_csv();
-    if (metrics_file_.is_open()) {
-        metrics_file_.close();
+    // CSV 파일 저장 및 닫기 (metrics가 활성화된 경우에만)
+    if (enable_metrics_) {
+        save_metrics_to_csv();
+        if (metrics_file_.is_open()) {
+            metrics_file_.close();
+        }
     }
 }
 
@@ -308,9 +312,12 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
 
         auto [steering_angle, drive_speed] = vehicle_control(global_current_x, global_current_y, global_current_yaw, car_current_speed, lookahead_waypoints, 0);
 
-        // Evaluation metrics 기록
         float target_speed = global_raceline_waypoints_[closest_idx].vx;
-        record_metrics(global_current_x, global_current_y, global_current_yaw, car_current_speed, closest_idx, target_speed);
+
+        // Evaluation metrics 기록 (metrics가 활성화된 경우에만)
+        if (enable_metrics_) {
+            record_metrics(global_current_x, global_current_y, global_current_yaw, car_current_speed, closest_idx, target_speed);
+        }
 
         auto drive_msg = ackermann_msgs::msg::AckermannDriveStamped();
         drive_msg.drive.steering_angle = steering_angle;

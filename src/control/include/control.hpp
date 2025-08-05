@@ -65,7 +65,7 @@ class Control : public rclcpp::Node {
 public:
     rclcpp::TimerBase::SharedPtr marker_timer_;
 
-    Control(float stanley_gain = 13.0f, int lookahead_heading = 3);  // lookahead_heading 파라미터 추가
+    Control(float stanley_gain = 13.0f, int lookahead_heading = 3, bool enable_metrics = false);  // lookahead_heading 파라미터 추가
     ~Control();
 
 private:
@@ -103,6 +103,7 @@ private:
     std::vector<RacelineWaypoint> global_raceline_waypoints_;
 
     // Evaluation Metrics 관련
+    bool enable_metrics_;  // metrics 기록 여부
     std::vector<EvaluationMetrics> metrics_data_;
     std::ofstream metrics_file_;
     std::chrono::steady_clock::time_point start_time_;
