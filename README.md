@@ -24,8 +24,14 @@
 
 > ### Control
 **Yunsang Jeong**
+<<<<<<< HEAD
+- Control
+- Done : Pure pursuit, Stanley, PID
+- ToDo : MPC Study, Code
+=======
 - Hardware
 - ToDo : Pure pursuit, Stanley, PID
+>>>>>>> a6daf1735d92431111a22d29bfe265aa7c930581
 
 ## Basic Launch
 ```bash
