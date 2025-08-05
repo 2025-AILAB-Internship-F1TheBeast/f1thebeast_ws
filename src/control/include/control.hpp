@@ -117,12 +117,12 @@ private:
     float local_planner_based_stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints);
     float stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints);
     float point_to_line_distance_with_heading(float line_x, float line_y, float line_heading, float point_x, float point_y);
-    std::pair<float, float> vehicle_control(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx);
+    std::pair<float, float> vehicle_control(float global_car_x, float global_car_y, float yaw, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx);
     float pid_controller(float target_speed, float current_speed);
 
     // 콜백 및 유틸리티 함수들
-    void odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
-    void initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
+    void pose_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
+    void initial_pose_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
     size_t find_closest_waypoint_local_search(float global_current_x, float global_current_y);
     void load_raceline_waypoints(const std::string& csv_path);
     void publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints);
@@ -132,7 +132,7 @@ private:
     void initialize_metrics_csv();
     float calculate_cross_track_error(float car_x, float car_y, size_t closest_idx);
     float calculate_yaw_error(float car_yaw, size_t closest_idx);
-    void record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed);
+    void record_metrics(float car_x, float car_y, float car_yaw, size_t closest_idx, float target_speed);
     void save_metrics_to_csv();
 };
 

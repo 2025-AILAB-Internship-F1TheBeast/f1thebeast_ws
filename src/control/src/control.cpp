@@ -18,7 +18,7 @@ Control::Control(float stanley_gain, int lookahead_heading) : Node("controller_n
 
     // 초기 위치 설정을 위한 일회성 odometry 구독
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/pf/pose/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
+        "/pf/viz/inferred_pose", 10, std::bind(&Control::initial_pose_callback, this, std::placeholders::_1));
 
     RCLCPP_INFO(this->get_logger(), "Control node initialized with stanley gain: %.2f, lookahead heading: %d", stanley_gain_, lookahead_heading_);
 }
@@ -151,25 +151,18 @@ float Control::point_to_line_distance_with_heading(float line_x, float line_y, f
     return distance;
 }
 
-std::pair<float, float> Control::vehicle_control(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx) {
-    
+std::pair<float, float> Control::vehicle_control(float global_car_x, float global_car_y, float yaw, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx) {
+
     std::cout << "============================================" << std::endl;
-    std::cout << "Global Car Position: (" << global_car_x << ", " << global_car_y << "), Yaw: " << yaw << ", Speed: " << car_speed << std::endl;
+    std::cout << "Global Car Position: (" << global_car_x << ", " << global_car_y << "), Yaw: " << yaw << std::endl;
     std::cout << "Closest Waypoint Position: (" << waypoints[closest_idx].x << ", " << waypoints[closest_idx].y << ")" << "Yaw: " << waypoints[closest_idx].psi << std::endl;
 
     // local_path의 좌표를 global 좌표계에서 local 좌표계로 변환
     std::vector<LocalWaypoint> local_points = global_to_local(global_car_x, global_car_y, yaw, waypoints);
-    float current_speed = car_speed;
-
-    // local_path의 좌표를 모두 출력
-    // for (const auto& point : local_points) {
-    //     std::cout << "Local Point: (" << point.first << ", " << point.second << ")" << std::endl;
-    // }
 
     // raceline의 속도 값을 목표 속도로 사용
     float target_speed = waypoints[closest_idx].vx;
-    float drive_speed = pid_controller(target_speed, current_speed);
-    drive_speed = target_speed * 0.5;
+    float drive_speed = target_speed * 0.5;
     // float stanley_steer = local_planner_based_stanley_controller(current_speed, local_points);
     float stanley_steer = stanley_controller(current_speed, local_points);
     // stanley_steer = 0.0;
@@ -177,36 +170,13 @@ std::pair<float, float> Control::vehicle_control(float global_car_x, float globa
     return std::make_pair(stanley_steer, drive_speed);
 }
 
-float Control::pid_controller(float target_speed, float current_speed) {
-    float dt = 0.1;
-
-    const float Kp = 5.0f;
-    const float Ki = 1.5f;
-    const float Kd = 4.2f;
-
-    float error = target_speed - current_speed;
-
-    float P = Kp * error;
-    pid_integral_ += error * dt;
-    float I = Ki * pid_integral_;
-    
-    float derivative = (error - pid_prev_error_) / dt;
-    float D = Kd * derivative;
-
-    float output = P + I + D;
-    pid_prev_error_ = error;
-
-    // std::cout << "Target Speed: " << target_speed << ", Current Speed: " << current_speed << ", PID Output: " << output << std::endl;
-
-    return output;
-}
-
-void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg) {
+// Perception의 localization 패키지로부터 차량의 pose를 받아오기
+void Control::initial_pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr pose_msg) {
     try {
         // base_link 좌표계의 위치와 자세 추출
-        float base_link_x = odom_msg->pose.pose.position.x;
-        float base_link_y = odom_msg->pose.pose.position.y;
-        float global_current_yaw = tf2::getYaw(odom_msg->pose.pose.orientation);
+        float base_link_x = pose_msg->pose.pose.position.x;
+        float base_link_y = pose_msg->pose.pose.position.y;
+        float global_current_yaw = tf2::getYaw(pose_msg->pose.pose.orientation);
         
         // base_link에서 front_wheel로 변환 (wheelbase만큼 앞쪽으로 이동)
         const float wheelbase = 0.3302f;
@@ -231,12 +201,12 @@ void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPt
                     current_closest_idx_, min_dist);
         
         // 초기 odometry 구독 해제하고 일반 odometry 구독 시작
-        initial_odom_subscription_.reset();
-        odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/pf/pose/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
-        
+        initial_pose_subscription_.reset();
+        pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+            "/pf/pose/odom", 10, std::bind(&Control::pose_callback, this, std::placeholders::_1));
+
     } catch (const std::exception &e) {
-        RCLCPP_ERROR(this->get_logger(), "Error during initial_odom_callback: %s", e.what());
+        RCLCPP_ERROR(this->get_logger(), "Error during initial_pose_callback: %s", e.what());
     }
 }
 
@@ -271,26 +241,17 @@ size_t Control::find_closest_waypoint_local_search(float global_current_x, float
     return closest_idx;
 }
 
-void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg) {
+void Control::pose_callback(const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr pose_msg) {
     try {
         // base_link 좌표계의 위치와 자세 추출
-        float base_link_x = odom_msg->pose.pose.position.x;
-        float base_link_y = odom_msg->pose.pose.position.y;
-        float global_current_yaw = tf2::getYaw(odom_msg->pose.pose.orientation);
-        std::cout << "global_current_yaw: " << global_current_yaw * 180.0 / PI << " deg" << std::endl;
+        float base_link_x = pose_msg->pose.pose.position.x;
+        float base_link_y = pose_msg->pose.pose.position.y;
+        float global_current_yaw = tf2::getYaw(pose_msg->pose.pose.orientation);
         
         // base_link에서 front_wheel로 변환 (wheelbase만큼 앞쪽으로 이동)
         const float wheelbase = 0.3302f;
         float global_current_x = base_link_x + wheelbase * std::cos(global_current_yaw);
         float global_current_y = base_link_y + wheelbase * std::sin(global_current_yaw);
-        
-        float car_current_speed = std::sqrt(
-            odom_msg->twist.twist.linear.x * odom_msg->twist.twist.linear.x +
-            odom_msg->twist.twist.linear.y * odom_msg->twist.twist.linear.y);
-        
-        if (car_current_speed < 0.000001f) {
-            RCLCPP_WARN(this->get_logger(), "Car speed is too low!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-        }
 
         // 효율적인 가장 가까운 waypoint 찾기 (순환 경로 고려)
         size_t closest_idx = find_closest_waypoint_local_search(global_current_x, global_current_y);
@@ -306,11 +267,11 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
 
         publish_lookahead_waypoints_marker(lookahead_waypoints);
 
-        auto [steering_angle, drive_speed] = vehicle_control(global_current_x, global_current_y, global_current_yaw, car_current_speed, lookahead_waypoints, 0);
+        auto [steering_angle, drive_speed] = vehicle_control(global_current_x, global_current_y, global_current_yaw, lookahead_waypoints, 0);
 
         // Evaluation metrics 기록
         float target_speed = global_raceline_waypoints_[closest_idx].vx;
-        record_metrics(global_current_x, global_current_y, global_current_yaw, car_current_speed, closest_idx, target_speed);
+        record_metrics(global_current_x, global_current_y, global_current_yaw, closest_idx, target_speed);
 
         auto drive_msg = ackermann_msgs::msg::AckermannDriveStamped();
         drive_msg.drive.steering_angle = steering_angle;
@@ -493,7 +454,7 @@ float Control::calculate_yaw_error(float car_yaw, size_t closest_idx) {
     return yaw_error;
 }
 
-void Control::record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed) {
+void Control::record_metrics(float car_x, float car_y, float car_yaw , size_t closest_idx, float target_speed) {
     // 현재 시간 계산 (시작 시간으로부터의 경과 시간)
     auto current_time = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time_);
