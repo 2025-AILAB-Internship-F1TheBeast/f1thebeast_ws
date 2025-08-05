@@ -19,6 +19,7 @@ Control::Control(float stanley_gain, int lookahead_heading, bool enable_metrics)
     }
 
     // 초기 위치 설정을 위한 일회성 odometry 구독
+
     initial_pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
         "/pf/viz/inferred_pose", 10, std::bind(&Control::initial_pose_callback, this, std::placeholders::_1));
 
@@ -161,7 +162,7 @@ std::pair<float, float> Control::vehicle_control(float global_car_x, float globa
     std::cout << "============================================" << std::endl;
     std::cout << "Global Car Position: (" << global_car_x << ", " << global_car_y << "), Yaw: " << yaw << std::endl;
     std::cout << "Closest Waypoint Position: (" << waypoints[closest_idx].x << ", " << waypoints[closest_idx].y << ")" << "Yaw: " << waypoints[closest_idx].psi << std::endl;
-
+    
     // local_path의 좌표를 global 좌표계에서 local 좌표계로 변환
     std::vector<LocalWaypoint> local_points = global_to_local(global_car_x, global_car_y, yaw, waypoints);
 
