@@ -47,6 +47,14 @@ struct LocalWaypoint {
     LocalWaypoint(float x_, float y_, float heading_) : x(x_), y(y_), heading(heading_) {}
 };
 
+struct DifferentialWaypoint {
+    float dx;
+    float dy;
+    float l2s;
+
+    DifferentialWaypoint(float dx_, float dy_, float l2s_) : dx(dx_), dy(dy_), l2s(l2s_) {}
+};
+
 // Evaluation Metrics 구조체
 struct EvaluationMetrics {
     double timestamp;
@@ -65,7 +73,7 @@ class Control : public rclcpp::Node {
 public:
     rclcpp::TimerBase::SharedPtr marker_timer_;
 
-    Control(float stanley_gain = 13.0f, int lookahead_heading = 3, bool enable_metrics = false);  // lookahead_heading 파라미터 추가
+    Control(float stanley_gain = 13.0f, bool enable_metrics = false);
     ~Control();
 
 private:
@@ -86,9 +94,6 @@ private:
 
     // Stanley 제어기 gain
     float stanley_gain_;
-    
-    // Lookahead heading 인덱스
-    int lookahead_heading_;
 
     // Waypoint 추적 관련
     size_t current_closest_idx_;
@@ -116,7 +121,7 @@ private:
     // 제어 알고리즘 함수들
     float pure_pursuit(float steer_ang_rad, float lookahead_dist);
     float local_planner_based_stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints);
-    float stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints);
+    float stanley_controller(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float point_to_line_distance_with_heading(float line_x, float line_y, float line_heading, float point_x, float point_y);
     std::pair<float, float> vehicle_control(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx);
     float pid_controller(float target_speed, float current_speed);

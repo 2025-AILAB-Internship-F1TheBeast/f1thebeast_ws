@@ -1,8 +1,8 @@
 #include "control.hpp"
 #include <filesystem>
 
-Control::Control(float stanley_gain, int lookahead_heading, bool enable_metrics) : Node("controller_node"), odom_topic("/odom"), drive_topic("/drive"), 
-    pid_integral_(0.0f), pid_prev_error_(0.0f), stanley_gain_(stanley_gain), lookahead_heading_(lookahead_heading), current_closest_idx_(0), previous_velocity_(1.0f),
+Control::Control(float stanley_gain, bool enable_metrics) : Node("controller_node"), odom_topic("/odom"), drive_topic("/drive"), 
+    pid_integral_(0.0f), pid_prev_error_(0.0f), stanley_gain_(stanley_gain), current_closest_idx_(0), previous_velocity_(1.0f),
     previous_time_ns(this->now()), enable_metrics_(enable_metrics), max_cross_track_error_(0.0f), max_yaw_error_(0.0f), max_speed_error_(0.0f) {
     
     drive_publisher_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(drive_topic, 10);
@@ -22,7 +22,7 @@ Control::Control(float stanley_gain, int lookahead_heading, bool enable_metrics)
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
         "/ego_racecar/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
 
-    RCLCPP_INFO(this->get_logger(), "Control node initialized with stanley gain: %.2f, lookahead heading: %d, metrics: %s", stanley_gain_, lookahead_heading_, enable_metrics_ ? "enabled" : "disabled");
+    RCLCPP_INFO(this->get_logger(), "Control node initialized with stanley gain: %.2f, metrics: %s", stanley_gain_, enable_metrics_ ? "enabled" : "disabled");
 }
 
 Control::~Control() {
@@ -67,9 +67,9 @@ float Control::local_planner_based_stanley_controller(float car_velocity, std::v
     double dt = (current_time_ns - previous_time_ns).seconds();
     previous_time_ns = current_time_ns;
 
-    float waypoint_x = waypoints[lookahead_heading_].x;
-    float waypoint_y = waypoints[lookahead_heading_].y;
-    float waypoint_heading = waypoints[lookahead_heading_].heading;
+    float waypoint_x = waypoints[0].x;
+    float waypoint_y = waypoints[0].y;
+    float waypoint_heading = waypoints[0].heading;
 
     // heading을 이용한 점과 직선 사이의 거리 계산
     float track_error = point_to_line_distance_with_heading(waypoint_x, waypoint_y, waypoint_heading, x_front, y_front);
@@ -103,37 +103,141 @@ float Control::local_planner_based_stanley_controller(float car_velocity, std::v
     return steering_angle;
 }
 
-float Control::stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints) {
+float Control::stanley_controller(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints) {
+
     // Hyperparameter for stanley controller
     const float k_dist_gain = stanley_gain_;
-    // const float k_soft_gain = 5.0;
 
-    const float x_front = 0.0f;
-    const float y_front = 0.0f;
-    
-    // lookahead_heading_ 인덱스 사용 (범위 확인)
-    float waypoint_x = waypoints[0].x;
-    float waypoint_y = waypoints[0].y;
-    float waypoint_heading = waypoints[0].heading;
+    // waypoint들 간의 벡터를 저장 (diffs = trajectory[1:,:] - trajectory[:-1,:])
+    std::vector<DifferentialWaypoint> diffs;
 
-    // lookahead_heading_ 인덱스가 waypoints 범위 내에 있는지 확인
-    int heading_idx = std::min(lookahead_heading_, static_cast<int>(waypoints.size()) - 1);
-    // waypoint_x = waypoints[heading_idx].x;
-    // waypoint_y = waypoints[heading_idx].y;
-    waypoint_heading = waypoints[heading_idx].heading;
-    float heading_error = waypoint_heading;
+    // // 첫번째부터 끝 waypoint의 위치 모두 print하기
+    // std::cout << "모든 waypoint 위치 출력 : " << std::endl;
+    // for (const auto& waypoint : waypoints) {
+    //     std::cout << "x : " << waypoint.x << ", y : " << waypoint.y << std::endl;
+    // }
+    // 자기 자신 위치 출력
+    // std::cout << "차의 위치 출력" << std::endl;
+    // std::cout << "x : " << global_car_x << ", y : " << global_car_y << std::endl;
 
-    // heading을 이용한 점과 직선 사이의 거리 계산
-    float track_error = point_to_line_distance_with_heading(waypoint_x, waypoint_y, waypoint_heading, x_front, y_front);
-
-    // 부호 결정 (waypoint가 차량의 왼쪽에 있으면 음수)
-    if (waypoint_y < 0.0f) {
-        track_error *= -1.0;
+    // waypoints들 사이의 벡터를 계산
+    for (int i = 0; i < waypoints.size() - 1; i++) {
+        float dx = waypoints[i+1].x - waypoints[i].x;
+        float dy = waypoints[i+1].y - waypoints[i].y;
+        float l2s = dx * dx + dy * dy;  // 벡터 길이의 제곱
+        diffs.emplace_back(dx, dy, l2s);
     }
 
-    // steering angle 계산
-    float steering_angle = heading_error + std::atan2(k_dist_gain * track_error, car_velocity);
+    // 내적값을 저장 (dots[i] = np.dot((point - trajectory[i, :]), diffs[i, :]))
+    std::vector<float> dots;
+    for (int i = 0; i < diffs.size(); i++) {
+        float to_point_x = global_car_x - waypoints[i].x;
+        float to_point_y = global_car_y - waypoints[i].y;
+        float dot_product = to_point_x * diffs[i].dx + to_point_y * diffs[i].dy;
+        dots.push_back(dot_product);
+    }
 
+    // t 값 계산 (t = dots / l2s)
+    std::vector<float> t;
+    for (int i = 0; i < dots.size(); i++) {
+        float t_val = dots[i] / diffs[i].l2s;
+        // t 값을 [0, 1] 범위로 클램핑
+        if (t_val < 0.0f) t_val = 0.0f;
+        if (t_val > 1.0f) t_val = 1.0f;
+        t.push_back(t_val);
+    }
+
+    // 각 선분에서의 projection point 계산 (projections = trajectory[:-1,:] + (t*diffs.T).T)
+    std::vector<std::pair<float, float>> projections;
+    for (int i = 0; i < t.size(); i++) {
+        float proj_x = waypoints[i].x + t[i] * diffs[i].dx;
+        float proj_y = waypoints[i].y + t[i] * diffs[i].dy;
+        projections.emplace_back(proj_x, proj_y);
+    }
+
+    // 각 projection point까지의 거리 계산
+    std::vector<float> dists;
+    for (int i = 0; i < projections.size(); i++) {
+        float temp_x = global_car_x - projections[i].first;
+        float temp_y = global_car_y - projections[i].second;
+        float dist = std::sqrt(temp_x * temp_x + temp_y * temp_y);
+        dists.push_back(dist);
+    }
+
+    // 가장 가까운 선분 찾기
+    int min_dist_segment = 0;
+    float min_dist = dists[0];
+    for (int i = 1; i < dists.size(); i++) {
+        if (dists[i] < min_dist) {
+            min_dist = dists[i];
+            min_dist_segment = i;
+        }
+    }
+
+    // Cross track error 계산 (가장 가까운 점까지의 거리)
+    float track_error = min_dist;
+    
+    // 부호 결정: Python 코드 참고 - 차량의 heading을 기준으로 판단
+    // 차량 위치에서 가장 가까운 projection point로의 벡터
+    float vec_dist_x = global_car_x - projections[min_dist_segment].first;
+    float vec_dist_y = global_car_y - projections[min_dist_segment].second;
+    
+    // 차량 heading에서 90도 회전한 벡터 (차량의 왼쪽 방향)
+    float front_axle_vec_rot_90_x = std::cos(yaw - PI/2.0f);
+    float front_axle_vec_rot_90_y = std::sin(yaw - PI/2.0f);
+    
+    // 내적을 이용한 cross track error 부호 결정
+    // ef = np.dot(vec_dist_nearest_point.T, front_axle_vec_rot_90)
+    float ef_dot_product = vec_dist_x * front_axle_vec_rot_90_x + vec_dist_y * front_axle_vec_rot_90_y;
+    
+    // ef_dot_product가 양수면 차량이 경로의 왼쪽에 있음 (Stanley controller에서는 양수)
+    if (ef_dot_product < 0) {
+        track_error *= -1.0f;  // 차량이 경로의 오른쪽에 있으면 음수
+    }
+    
+    // std::cout << "Track Error (with sign): " << track_error << std::endl;
+    // std::cout << "ef_dot_product: " << ef_dot_product << std::endl;
+
+    // Heading error 계산 (가장 가까운 선분의 heading 사용)
+    // float segment_heading = std::atan2(diffs[min_dist_segment].dy, diffs[min_dist_segment].dx);
+    float segment_heading = waypoints[min_dist_segment].psi;
+
+    // segment_heading -PI에서 PI 범위로 클램핑
+    if (segment_heading >= PI) {
+        segment_heading -= 2 * PI;
+    } else if (segment_heading < -PI) {
+        segment_heading += 2 * PI;
+    }
+
+    // std::cout << "segment_heading : " << segment_heading * 180 / PI << "도" << std::endl;
+    // std::cout << "차량의 yaw : " << yaw * 180 / PI << "도" << std::endl;
+    float heading_error = segment_heading - yaw;  // 차량의 yaw와 선분의 heading 차이
+
+    // std::cout << "heading_error (before clamping): " << heading_error * 180 / PI << "도" << std::endl;
+
+    // heading error를 -PI에서 PI 범위로 클램핑
+    if (heading_error > PI) {
+        heading_error -= 2 * PI;
+    } else if (heading_error < -PI) {
+        heading_error += 2 * PI;
+    }
+
+    // heading error 출력
+    // std::cout << "heading_error : " << heading_error * 180 / PI << "도" << std::endl;
+
+    // Stanley controller 공식: steering_angle = heading_error + atan2(k * cross_track_error, velocity)
+    float steering_angle = heading_error + std::atan2(k_dist_gain * track_error, std::max(car_speed, 1.0f));
+
+    // std::cout << "크로스트랙 에러 : " << std::atan2(k_dist_gain * track_error, std::max(car_speed, 1.0f)) * 180 / PI << std::endl;
+
+    // steering_angle 출력
+    // std::cout << "스티어링 각도 : " << steering_angle * 180 / PI << "도" << std::endl;
+    // std::cout << "트랙과의 거리 : " << track_error << std::endl;
+
+    // std::cout << "첫번째 waypoint 위치 : " << std::endl;
+    // std::cout << "x : " << waypoints[0].x << ", y : " << waypoints[0].y << std::endl;
+
+    std::cout << "steering_angle : " << steering_angle * 180 / PI << "도" << std::endl;
     return steering_angle;
 }
 
@@ -156,28 +260,13 @@ float Control::point_to_line_distance_with_heading(float line_x, float line_y, f
 }
 
 std::pair<float, float> Control::vehicle_control(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx) {
-    
-    std::cout << "============================================" << std::endl;
-    std::cout << "Global Car Position: (" << global_car_x << ", " << global_car_y << "), Yaw: " << yaw << ", Speed: " << car_speed << std::endl;
-    std::cout << "Closest Waypoint Position: (" << waypoints[closest_idx].x << ", " << waypoints[closest_idx].y << ")" << "Yaw: " << waypoints[closest_idx].psi << std::endl;
-    
-    // local_path의 좌표를 global 좌표계에서 local 좌표계로 변환
-    std::vector<LocalWaypoint> local_points = global_to_local(global_car_x, global_car_y, yaw, waypoints);
-    float current_speed = car_speed;
-
-    // local_path의 좌표를 모두 출력
-    // for (const auto& point : local_points) {
-    //     std::cout << "Local Point: (" << point.first << ", " << point.second << ")" << std::endl;
-    // }
 
     // raceline의 속도 값을 목표 속도로 사용
-    float target_speed = waypoints[closest_idx].vx;
-    float drive_speed = pid_controller(target_speed, current_speed);
-    drive_speed = target_speed * 0.5;
-    // float stanley_steer = local_planner_based_stanley_controller(current_speed, local_points);
-    float stanley_steer = stanley_controller(current_speed, local_points);
-    // stanley_steer = 0.0;
-    // drive_speed = 0.0;
+    float target_speed = waypoints[3].vx;
+    float drive_speed = target_speed * 0.4f;  // 속도 조정 비율 (예: 1.0f로 설정)
+
+    // stanley controller 호출해서 스티어링 각도 계산
+    float stanley_steer = stanley_controller(global_car_x, global_car_y, yaw, car_speed, waypoints);
     return std::make_pair(stanley_steer, drive_speed);
 }
 
@@ -281,7 +370,6 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
         float base_link_x = odom_msg->pose.pose.position.x;
         float base_link_y = odom_msg->pose.pose.position.y;
         float global_current_yaw = tf2::getYaw(odom_msg->pose.pose.orientation);
-        std::cout << "global_current_yaw: " << global_current_yaw * 180.0 / PI << " deg" << std::endl;
         
         // base_link에서 front_wheel로 변환 (wheelbase만큼 앞쪽으로 이동)
         const float wheelbase = 0.3302f;
@@ -291,20 +379,17 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
         float car_current_speed = std::sqrt(
             odom_msg->twist.twist.linear.x * odom_msg->twist.twist.linear.x +
             odom_msg->twist.twist.linear.y * odom_msg->twist.twist.linear.y);
-        
-        if (car_current_speed < 0.000001f) {
-            RCLCPP_WARN(this->get_logger(), "Car speed is too low!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-        }
 
         // 효율적인 가장 가까운 waypoint 찾기 (순환 경로 고려)
         size_t closest_idx = find_closest_waypoint_local_search(global_current_x, global_current_y);
         current_closest_idx_ = closest_idx; // 현재 인덱스 업데이트
-        // std::cout << "Closest waypoint index: " << closest_idx << std::endl; // 약 4~5 callback = 1 waypoint
 
-        // lookahead waypoints 생성 (순환 경로 고려)
+        // lookahead waypoints 생성
+        // 앞 뒤로 3개씩의 waypoints, 총 7개를 생성
+
         std::vector<RacelineWaypoint> lookahead_waypoints;
-        for (size_t i = 0; i < 10; ++i) {
-            size_t idx = (closest_idx + i) % global_raceline_waypoints_.size();  // 순환 인덱스
+        for (int i = -3; i < 4; i++) {
+            size_t idx = (closest_idx + i + global_raceline_waypoints_.size()) % global_raceline_waypoints_.size();  // 순환 인덱스
             lookahead_waypoints.push_back(global_raceline_waypoints_[idx]);
         }
 
@@ -438,7 +523,7 @@ void Control::initialize_metrics_csv() {
     auto tm = *std::localtime(&time_t);
     
     std::stringstream filename;
-    filename << metrics_dir << "/" << stanley_gain_ << "_" << lookahead_heading_ << "_Catalunya_metrics_" 
+    filename << metrics_dir << "/" << stanley_gain_ << "_" << "_Catalunya_metrics_"
              << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".csv";
 
     metrics_file_.open(filename.str());
