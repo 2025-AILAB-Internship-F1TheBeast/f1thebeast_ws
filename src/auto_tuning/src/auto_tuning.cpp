@@ -201,18 +201,9 @@ float Auto_tuning::point_to_line_distance_with_heading(float line_x, float line_
 
 std::pair<float, float> Auto_tuning::vehicle_control(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx) {
     
-    // std::cout << "============================================" << std::endl;
-    // std::cout << "Global Car Position: (" << global_car_x << ", " << global_car_y << "), Yaw: " << yaw << ", Speed: " << car_speed << std::endl;
-    // std::cout << "Closest Waypoint Position: (" << waypoints[closest_idx].x << ", " << waypoints[closest_idx].y << ")" << "Yaw: " << waypoints[closest_idx].psi << std::endl;
-
     // local_path의 좌표를 global 좌표계에서 local 좌표계로 변환
     std::vector<LocalWaypoint> local_points = global_to_local(global_car_x, global_car_y, yaw, waypoints);
     float current_speed = car_speed;
-
-    // local_path의 좌표를 모두 출력
-    // for (const auto& point : local_points) {
-    //     std::cout << "Local Point: (" << point.first << ", " << point.second << ")" << std::endl;
-    // }
 
     // raceline의 속도 값을 목표 속도로 사용
     float target_speed = waypoints[closest_idx].vx;
@@ -243,8 +234,6 @@ float Auto_tuning::pid_controller(float target_speed, float current_speed) {
 
     float output = P + I + D;
     pid_prev_error_ = error;
-
-    // std::cout << "Target Speed: " << target_speed << ", Current Speed: " << current_speed << ", PID Output: " << output << std::endl;
 
     return output;
 }
@@ -328,7 +317,7 @@ void Auto_tuning::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr od
             } else {
                 // 복구 완료
                 collision_recovery_mode_ = false;
-                RCLCPP_INFO(this->get_logger(), "Collision recovery completed (0.5s)");
+                RCLCPP_INFO(this->get_logger(), "Collision recovery completed (0.2s)");
             }
         }
 
@@ -345,7 +334,7 @@ void Auto_tuning::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr od
             } else {
                 // 완주 복구 완료
                 lap_completion_recovery_mode_ = false;
-                RCLCPP_INFO(this->get_logger(), "Lap completion recovery completed (0.5s), starting new lap");
+                RCLCPP_INFO(this->get_logger(), "Lap completion recovery completed (0.2s), starting new lap");
             }
         }
 
@@ -362,14 +351,12 @@ void Auto_tuning::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr od
             } else {
                 // CTE 초과 복구 완료
                 cte_exceeded_recovery_mode_ = false;
-                RCLCPP_INFO(this->get_logger(), "CTE exceeded recovery completed (0.5s), starting new lap");
+                RCLCPP_INFO(this->get_logger(), "CTE exceeded recovery completed (0.2s), starting new lap");
             }
         }
 
         // gym_bridge에서 벽에 부딪혔다는 신호가 들어오면
         if (wall_collision_) {
-            RCLCPP_WARN(this->get_logger(), "Collision detected! Current params - stanley_gain: %.2f, lookahead_heading: %d", 
-                        stanley_gain_, lookahead_heading_);
             
             // 현재 CSV 파일 삭제 (충돌로 인한 삭제)
             delete_current_csv();
@@ -451,16 +438,6 @@ void Auto_tuning::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr od
         
         // CTE가 임계값을 초과했는지 확인
         if (current_cte >= max_cte_threshold_) {
-            // RCLCPP_WARN(this->get_logger(), "=== CTE EXCEEDED THRESHOLD! ===");
-            // RCLCPP_WARN(this->get_logger(), "Current CTE: %.3f >= Threshold: %.3f", current_cte, max_cte_threshold_);
-            // RCLCPP_WARN(this->get_logger(), "Current params - stanley_gain: %.2f, lookahead_heading: %d", 
-            //             stanley_gain_, lookahead_heading_);
-            
-            // 차량의 위치 알리기
-            // std::cout << "CTE exceeded position - x: " << odom_msg->pose.pose.position.x 
-            //           << ", y: " << odom_msg->pose.pose.position.y << std::endl;
-            // std::cout << "current_closest_idx_: " << current_closest_idx_ << std::endl;
-            
             // 시뮬레이터에 리셋 신호 전송
             auto reset_msg = std_msgs::msg::String();
             reset_msg.data = "cte_exceeded";
@@ -546,6 +523,7 @@ void Auto_tuning::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr od
             // 전체 경로의 90% 이상 진행하고 시작점 근처(±30 waypoints)에 도달하면 완주
             if (distance_from_start >= total_waypoints * 0.9) {
                 size_t start_range = 30;
+
                 if ((closest_idx <= initial_closest_idx_ + start_range && closest_idx >= initial_closest_idx_) ||
                     (initial_closest_idx_ < start_range && closest_idx >= total_waypoints - (start_range - initial_closest_idx_))) {
                     

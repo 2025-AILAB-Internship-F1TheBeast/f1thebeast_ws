@@ -128,17 +128,17 @@ private:
     // CTE 초과 복구 관련 변수 추가
     rclcpp::Time cte_exceeded_time_;
     bool cte_exceeded_recovery_mode_;
-    static constexpr double CTE_EXCEEDED_RECOVERY_DURATION = 0.5; // 0.5초
-    
+    static constexpr double CTE_EXCEEDED_RECOVERY_DURATION = 0.2; // 0.2초
+
     // 충돌 복구 관련 변수 추가
     rclcpp::Time collision_time_;
     bool collision_recovery_mode_;
-    static constexpr double COLLISION_RECOVERY_DURATION = 0.5; // 0.5초
+    static constexpr double COLLISION_RECOVERY_DURATION = 0.2; // 0.2초
 
     // 완주 복구 관련 변수 추가
     rclcpp::Time lap_completion_time_;
     bool lap_completion_recovery_mode_;
-    static constexpr double LAP_COMPLETION_RECOVERY_DURATION = 0.5; // 0.5초
+    static constexpr double LAP_COMPLETION_RECOVERY_DURATION = 0.2; // 0.2초
 
     // CSV 파일 관리 관련 변수 추가
     std::string current_csv_filename_;  // 현재 CSV 파일명 저장
