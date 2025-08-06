@@ -111,15 +111,6 @@ float Control::stanley_controller(float global_car_x, float global_car_y, float 
     // waypoint들 간의 벡터를 저장 (diffs = trajectory[1:,:] - trajectory[:-1,:])
     std::vector<DifferentialWaypoint> diffs;
 
-    // // 첫번째부터 끝 waypoint의 위치 모두 print하기
-    // std::cout << "모든 waypoint 위치 출력 : " << std::endl;
-    // for (const auto& waypoint : waypoints) {
-    //     std::cout << "x : " << waypoint.x << ", y : " << waypoint.y << std::endl;
-    // }
-    // 자기 자신 위치 출력
-    // std::cout << "차의 위치 출력" << std::endl;
-    // std::cout << "x : " << global_car_x << ", y : " << global_car_y << std::endl;
-
     // waypoints들 사이의 벡터를 계산
     for (int i = 0; i < waypoints.size() - 1; i++) {
         float dx = waypoints[i+1].x - waypoints[i].x;
@@ -194,9 +185,6 @@ float Control::stanley_controller(float global_car_x, float global_car_y, float 
     if (ef_dot_product < 0) {
         track_error *= -1.0f;  // 차량이 경로의 오른쪽에 있으면 음수
     }
-    
-    // std::cout << "Track Error (with sign): " << track_error << std::endl;
-    // std::cout << "ef_dot_product: " << ef_dot_product << std::endl;
 
     // Heading error 계산 (가장 가까운 선분의 heading 사용)
     // float segment_heading = std::atan2(diffs[min_dist_segment].dy, diffs[min_dist_segment].dx);
@@ -222,20 +210,8 @@ float Control::stanley_controller(float global_car_x, float global_car_y, float 
         heading_error += 2 * PI;
     }
 
-    // heading error 출력
-    // std::cout << "heading_error : " << heading_error * 180 / PI << "도" << std::endl;
-
     // Stanley controller 공식: steering_angle = heading_error + atan2(k * cross_track_error, velocity)
-    float steering_angle = heading_error + std::atan2(k_dist_gain * track_error, std::max(car_speed, 1.0f));
-
-    // std::cout << "크로스트랙 에러 : " << std::atan2(k_dist_gain * track_error, std::max(car_speed, 1.0f)) * 180 / PI << std::endl;
-
-    // steering_angle 출력
-    // std::cout << "스티어링 각도 : " << steering_angle * 180 / PI << "도" << std::endl;
-    // std::cout << "트랙과의 거리 : " << track_error << std::endl;
-
-    // std::cout << "첫번째 waypoint 위치 : " << std::endl;
-    // std::cout << "x : " << waypoints[0].x << ", y : " << waypoints[0].y << std::endl;
+    float steering_angle = heading_error + std::atan2(k_dist_gain * track_error, car_speed+0.1f);
 
     std::cout << "steering_angle : " << steering_angle * 180 / PI << "도" << std::endl;
     return steering_angle;
