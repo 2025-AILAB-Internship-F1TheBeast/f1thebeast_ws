@@ -8,8 +8,8 @@ Control::Control(float stanley_gain, bool enable_metrics) : Node("controller_nod
     drive_publisher_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(drive_topic, 10);
     lookahead_waypoints_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("lookahead_waypoints_marker", 1);
 
-    // raceline.csv로 경로 변경
-    std::string raceline_csv_path = "/home/jys/ROS2/f1thebeast_ws/src/control/map/f1tenth_racetracks/Catalunya/Catalunya_raceline.csv";
+    // raceline.csv로 경로 변경 /home/jys/ROS2/f1thebeast_ws/src/control_ws/control/map/f1tenth_racetracks
+    std::string raceline_csv_path = "/home/jys/ROS2/f1thebeast_ws/src/control_ws/control/map/f1tenth_racetracks/Catalunya/Catalunya_raceline.csv";
     load_raceline_waypoints(raceline_csv_path);
 
     // Evaluation metrics 초기화 (enable_metrics가 true일 때만)
