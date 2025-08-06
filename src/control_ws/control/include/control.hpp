@@ -73,7 +73,7 @@ class Control : public rclcpp::Node {
 public:
     rclcpp::TimerBase::SharedPtr marker_timer_;
 
-    Control(float stanley_gain = 13.0f, bool enable_metrics = false);
+    Control(float stanley_gain = 3.5f, float velocity_gain = 1.0f, bool enable_metrics = false);
     ~Control();
 
 private:
@@ -92,8 +92,11 @@ private:
     float pid_integral_;
     float pid_prev_error_;
 
-    // Stanley 제어기 gain
+    // Stanley 제어기 gain : stanley_gain_ (기본값: 3.5f)
+    // velocity_gain_ (기본값: 1.0f)
+    // enable_metrics_ (기본값: false)
     float stanley_gain_;
+    float velocity_gain_;
 
     // Waypoint 추적 관련
     size_t current_closest_idx_;
