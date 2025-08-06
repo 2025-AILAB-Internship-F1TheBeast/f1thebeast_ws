@@ -193,7 +193,7 @@ class MetricsAnalyzer:
         
         # Plot cross track error
         axes[0].plot(data['timestamp'], data['cross_track_error'], 'b-', linewidth=1)
-        axes[0].set_ylabel('Cross Track Error')
+        axes[0].set_ylabel('Cross Track Error (m)')
         axes[0].set_title(f'Vehicle Control Metrics Over Time {time_range_str}')
         axes[0].grid(True, alpha=0.3)
         # Add RMS text box
@@ -203,7 +203,7 @@ class MetricsAnalyzer:
         
         # Plot yaw error
         axes[1].plot(data['timestamp'], data['yaw_error'], 'r-', linewidth=1)
-        axes[1].set_ylabel('Yaw Error (rad)')
+        axes[1].set_ylabel('Yaw Error (degree)')
         axes[1].grid(True, alpha=0.3)
         # Add RMS text box
         axes[1].text(0.02, 0.98, f'RMS: {yaw_error_rms:.6f}', 
@@ -909,7 +909,7 @@ def main():
         print("GENERATING VEHICLE PATH HEATMAPS")
         print("="*50)
 
-        reference_path_file = "/home/jys/ROS2/f1thebeast_ws/src/control/map/f1tenth_racetracks/Catalunya/Catalunya_raceline.csv"
+        reference_path_file = "/home/jys/ROS2/map_creater/raceline.csv"
 
         if args.start_time is not None and args.end_time is not None:
             analyzer.plot_vehicle_path_heatmap(start_time=args.start_time, end_time=args.end_time, save_plot=True, output_dir=output_dir, reference_path_file=reference_path_file)

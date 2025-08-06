@@ -301,7 +301,7 @@ std::pair<float, float> Control::vehicle_control(float global_car_x, float globa
 
     // raceline의 속도 값을 목표 속도로 사용
     float target_speed = waypoints[3].vx;
-    float drive_speed = target_speed * 0.625f;  // 속도 조정 비율 (예: 1.0f로 설정)
+    float drive_speed = target_speed * 4.0/8.0;  // 속도 조정 비율 (예: 1.0f로 설정)
 
     // stanley controller 호출해서 스티어링 각도 계산
     float stanley_steer = stanley_controller(global_car_x, global_car_y, yaw, car_speed, waypoints);
@@ -648,7 +648,7 @@ void Control::record_metrics(float car_x, float car_y, float car_yaw, float car_
 
     // 에러 계산
     metrics.cross_track_error = calculate_cross_track_error(car_x, car_y, closest_idx);
-    metrics.yaw_error = calculate_yaw_error(car_yaw, closest_idx);
+    metrics.yaw_error = calculate_yaw_error(car_yaw, closest_idx) * 180.0 / PI; // 라디안에서 도 단위로 변환
     metrics.speed_error = std::abs(car_speed - target_speed);
 
     // Max 값 업데이트
