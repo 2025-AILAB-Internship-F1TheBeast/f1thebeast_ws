@@ -9,7 +9,7 @@ Control::Control(float stanley_gain, float velocity_gain, bool enable_metrics) :
     lookahead_waypoints_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("lookahead_waypoints_marker", 1);
 
     // raceline.csv로 경로 변경 /home/jys/ROS2/f1thebeast_ws/src/control_ws/control/map/f1tenth_racetracks
-    std::string raceline_csv_path = "/home/jys/ROS2/f1thebeast_ws/src/control_ws/control/map/f1tenth_racetracks/Catalunya/Catalunya_raceline.csv";
+    std::string raceline_csv_path = "/home/jys/ROS2/map_creater/raceline.csv";
     load_raceline_waypoints(raceline_csv_path);
 
     // Evaluation metrics 초기화 (enable_metrics가 true일 때만)
@@ -440,7 +440,9 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
         float target_speed = global_raceline_waypoints_[closest_idx].vx;
 
         // Evaluation metrics 기록 (metrics가 활성화된 경우에만)
+        std::cout << "just test" << std::endl;
         if (enable_metrics_) {
+            std::cout << "Recording metrics..." << std::endl;
             record_metrics(global_current_x, global_current_y, global_current_yaw, car_current_speed, closest_idx, target_speed);
         }
 
@@ -563,7 +565,7 @@ std::vector<LocalWaypoint> Control::global_to_local(float car_x, float car_y, fl
 
 void Control::initialize_metrics_csv() {
     // evaluation_metrics 폴더 생성
-    std::string metrics_dir = "/home/jys/ROS2/f1thebeast_ws/src/control/evaluation_metrics/csv_file";
+    std::string metrics_dir = "/home/jys/ROS2/f1thebeast_ws/src/control_ws/control/evaluation_metrics/csv_file";
     std::filesystem::create_directories(metrics_dir);
 
     // 현재 시간으로 파일명 생성
@@ -636,6 +638,7 @@ float Control::calculate_yaw_error(float car_yaw, size_t closest_idx) {
 
 void Control::record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed) {
     // 현재 시간 계산 (시작 시간으로부터의 경과 시간)
+    std::cout << "Recording metrics..." << std::endl;
     auto current_time = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time_);
     double elapsed_seconds = elapsed.count() / 1000.0; // 초 단위

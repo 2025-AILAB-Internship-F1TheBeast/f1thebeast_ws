@@ -80,7 +80,8 @@ int main(int argc, char **argv) {
     std::cout << "  Velocity gain: " << velocity_gain << std::endl;
     std::cout << "  Metrics recording: " << (enable_metrics ? "enabled" : "disabled") << std::endl;
 
-    rclcpp::spin(std::make_shared<Control>(stanley_gain, enable_metrics));
+    // 수정: 3개 매개변수 모두 전달
+    rclcpp::spin(std::make_shared<Control>(stanley_gain, velocity_gain, enable_metrics));
     rclcpp::shutdown();
     return 0;
 }
