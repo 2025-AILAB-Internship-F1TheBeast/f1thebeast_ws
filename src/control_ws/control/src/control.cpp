@@ -221,7 +221,7 @@ float Control::stanley_controller(float global_car_x, float global_car_y, float 
     float vec_dist_x = global_car_x - projections[min_dist_segment].first;
     float vec_dist_y = global_car_y - projections[min_dist_segment].second;
     
-    // 차량 heading에서 90도 회전한 벡터 (차량의 왼쪽 방향)
+    // 차량 heading에서 -90도 회전한 벡터 (차량의 오른쪽 방향)
     float front_axle_vec_rot_90_x = std::cos(yaw - PI/2.0f);
     float front_axle_vec_rot_90_y = std::sin(yaw - PI/2.0f);
     
@@ -301,7 +301,7 @@ std::pair<float, float> Control::vehicle_control(float global_car_x, float globa
 
     // raceline의 속도 값을 목표 속도로 사용
     float target_speed = waypoints[3].vx;
-    float drive_speed = target_speed * 4.0/8.0;  // 속도 조정 비율 (예: 1.0f로 설정)
+    float drive_speed = target_speed * 2.0/8.0;  // 속도 조정 비율 (예: 1.0f로 설정)
 
     // stanley controller 호출해서 스티어링 각도 계산
     float stanley_steer = stanley_controller(global_car_x, global_car_y, yaw, car_speed, waypoints);
@@ -328,8 +328,6 @@ float Control::pid_controller(float target_speed, float current_speed) {
 
     float output = P + I + D;
     pid_prev_error_ = error;
-
-    // std::cout << "Target Speed: " << target_speed << ", Current Speed: " << current_speed << ", PID Output: " << output << std::endl;
 
     return output;
 }
