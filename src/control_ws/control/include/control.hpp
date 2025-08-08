@@ -73,8 +73,31 @@ class Control : public rclcpp::Node {
 public:
     rclcpp::TimerBase::SharedPtr marker_timer_;
 
-    Control(float stanley_gain = 3.5f, float velocity_gain = 1.0f, bool enable_metrics = false);
+    Control(float stanley_gain = 3.5f, float soft_gain = 1.0f, bool enable_metrics = false);
     ~Control();
+
+    // 제어 알고리즘 함수들
+    float pure_pursuit(float steer_ang_rad, float lookahead_dist);
+    float local_planner_based_stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints);
+    float stanley_controller(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
+    float point_to_line_distance_with_heading(float line_x, float line_y, float line_heading, float point_x, float point_y);
+    std::pair<float, float> vehicle_control(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx);
+    float pid_controller(float target_speed, float current_speed);
+
+    // 콜백 및 유틸리티 함수들
+    void odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
+    void initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
+    size_t find_closest_waypoint_local_search(float global_current_x, float global_current_y);
+    void load_raceline_waypoints(const std::string& csv_path);
+    void publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints);
+    std::vector<LocalWaypoint> global_to_local(float car_x, float car_y, float car_yaw, const std::vector<RacelineWaypoint>& waypoints);
+
+    // Evaluation Metrics 관련 함수들
+    void initialize_metrics_csv();
+    float calculate_cross_track_error(float car_x, float car_y, size_t closest_idx);
+    float calculate_yaw_error(float car_yaw, size_t closest_idx);
+    void record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed);
+    void save_metrics_to_csv();
 
 private:
     // ROS 관련 멤버
@@ -93,10 +116,10 @@ private:
     float pid_prev_error_;
 
     // Stanley 제어기 gain : stanley_gain_ (기본값: 3.5f)
-    // velocity_gain_ (기본값: 1.0f)
+    // soft_gain_ (기본값: 1.0f)
     // enable_metrics_ (기본값: false)
     float stanley_gain_;
-    float velocity_gain_;
+    float soft_gain_;
 
     // Waypoint 추적 관련
     size_t current_closest_idx_;
@@ -121,28 +144,6 @@ private:
     float max_yaw_error_;
     float max_speed_error_;
 
-    // 제어 알고리즘 함수들
-    float pure_pursuit(float steer_ang_rad, float lookahead_dist);
-    float local_planner_based_stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints);
-    float stanley_controller(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
-    float point_to_line_distance_with_heading(float line_x, float line_y, float line_heading, float point_x, float point_y);
-    std::pair<float, float> vehicle_control(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx);
-    float pid_controller(float target_speed, float current_speed);
-
-    // 콜백 및 유틸리티 함수들
-    void odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
-    void initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
-    size_t find_closest_waypoint_local_search(float global_current_x, float global_current_y);
-    void load_raceline_waypoints(const std::string& csv_path);
-    void publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints);
-    std::vector<LocalWaypoint> global_to_local(float car_x, float car_y, float car_yaw, const std::vector<RacelineWaypoint>& waypoints);
-
-    // Evaluation Metrics 관련 함수들
-    void initialize_metrics_csv();
-    float calculate_cross_track_error(float car_x, float car_y, size_t closest_idx);
-    float calculate_yaw_error(float car_yaw, size_t closest_idx);
-    void record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed);
-    void save_metrics_to_csv();
 };
 
 #endif // CONTROL_HPP
