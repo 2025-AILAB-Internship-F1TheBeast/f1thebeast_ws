@@ -30,7 +30,7 @@ include_directories(include)
 
 # Create Cpp executable - control.cpp 추가
 add_executable(control_node src/control_node.cpp src/control.cpp)
-add_executable(visualize_global_node src/visualize_global.cpp)
+add_executable(visualize_global_node src/visualize_global_node.cpp src/visualize_global.cpp)
 
 ament_target_dependencies(control_node 
   rclcpp geometry_msgs ackermann_msgs nav_msgs sensor_msgs std_msgs visualization_msgs tf2 tf2_geometry_msgs

@@ -1,8 +1,10 @@
 #include "control.hpp"
 #include <filesystem>
 
-Control::Control(float stanley_gain, float velocity_gain, bool enable_metrics) : Node("controller_node"), odom_topic("/odom"), drive_topic("/drive"), 
-    pid_integral_(0.0f), pid_prev_error_(0.0f), stanley_gain_(stanley_gain), velocity_gain_(velocity_gain), current_closest_idx_(0), previous_velocity_(1.0f),
+
+// complete : control_class.cpp
+Control::Control(float stanley_gain, float soft_gain, bool enable_metrics) : Node("controller_node"), odom_topic("/odom"), drive_topic("/drive"), 
+    pid_integral_(0.0f), pid_prev_error_(0.0f), stanley_gain_(stanley_gain), soft_gain_(soft_gain), current_closest_idx_(0), previous_velocity_(1.0f),
     previous_time_ns(this->now()), enable_metrics_(enable_metrics), max_cross_track_error_(0.0f), max_yaw_error_(0.0f), max_speed_error_(0.0f) {
     
     drive_publisher_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(drive_topic, 10);
@@ -25,6 +27,7 @@ Control::Control(float stanley_gain, float velocity_gain, bool enable_metrics) :
     RCLCPP_INFO(this->get_logger(), "Control node initialized with stanley gain: %.2f, metrics: %s", stanley_gain_, enable_metrics_ ? "enabled" : "disabled");
 }
 
+// complete : control_class.cpp
 Control::~Control() {
     // CSV 파일 저장 및 닫기 (metrics가 활성화된 경우에만)
     if (enable_metrics_) {
@@ -35,6 +38,7 @@ Control::~Control() {
     }
 }
 
+// conplete : control_lateral_controller.cpp
 float Control::pure_pursuit(float steer_ang_rad, float lookahead_dist) {
     const float lidar_to_rear = 0.27f;
     const float wheel_base = 0.32f;
@@ -48,6 +52,7 @@ float Control::pure_pursuit(float steer_ang_rad, float lookahead_dist) {
     return std::atan2(2.0f * wheel_base * std::sin(lookahead_angle), lookahead_rear);
 }
 
+// conplete : control_lateral_controller.cpp
 float Control::local_planner_based_stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints) {
     // Hyperparameter for stanley controller
     const float k_angle_gain = 1.0;
@@ -103,6 +108,7 @@ float Control::local_planner_based_stanley_controller(float car_velocity, std::v
     return steering_angle;
 }
 
+// conplete : control_lateral_controller.cpp
 float Control::stanley_controller(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints) {
     std::cout << "===================== Stanley Controller ====================" << std::endl;
     // Hyperparameter for stanley controller
@@ -208,12 +214,12 @@ float Control::stanley_controller(float global_car_x, float global_car_y, float 
     }
 
     // Cross track error 계산 (가장 가까운 점까지의 거리)
-    float track_error = min_dist;
+    float cross_track_error = min_dist;
     
     // nan 체크
-    if (std::isnan(track_error)) {
-        RCLCPP_ERROR(this->get_logger(), "Track error is nan");
-        track_error = 0.0f;
+    if (std::isnan(cross_track_error)) {
+        RCLCPP_ERROR(this->get_logger(), "Cross track error is nan");
+        cross_track_error = 0.0f;
     }
     
     // 부호 결정: Python 코드 참고 - 차량의 heading을 기준으로 판단
@@ -231,7 +237,7 @@ float Control::stanley_controller(float global_car_x, float global_car_y, float 
     
     // ef_dot_product가 양수면 차량이 경로의 왼쪽에 있음 (Stanley controller에서는 양수)
     if (ef_dot_product < 0) {
-        track_error *= -1.0f;  // 차량이 경로의 오른쪽에 있으면 음수
+        cross_track_error *= -1.0f;  // 차량이 경로의 오른쪽에 있으면 음수
     }
 
     // Heading error 계산 (가장 가까운 선분의 heading 사용)
@@ -254,15 +260,15 @@ float Control::stanley_controller(float global_car_x, float global_car_y, float 
     }
 
     // Cross track error angle 계산에서 안전장치 추가
-    float cte_angle = std::atan2(k_dist_gain * track_error, car_speed + velocity_gain_);
+    float cte_angle = std::atan2(k_dist_gain * cross_track_error, car_speed + soft_gain_);
     if (std::isnan(cte_angle)) {
-        RCLCPP_ERROR(this->get_logger(), "CTE angle is nan - track_error: %f, car_speed: %f", 
-                     track_error, car_speed);
+        RCLCPP_ERROR(this->get_logger(), "CTE angle is nan - cross_track_error: %f, car_speed: %f", 
+                     cross_track_error, car_speed);
         cte_angle = 0.0f;
     }
 
     std::cout << "Heading error angle : " << heading_error * 180 / PI << " degrees" << std::endl;
-    std::cout << "Track error : " << track_error << std::endl;
+    std::cout << "Cross track error : " << cross_track_error << std::endl;
     std::cout << "Cross track error angle : " << cte_angle * 180 / PI << " degrees" << std::endl;
 
     // Modified Stanley controller: δ = ψ_e + atan2(k*e, v) + k_rate*∆r
@@ -279,6 +285,7 @@ float Control::stanley_controller(float global_car_x, float global_car_y, float 
     return steering_angle;
 }
 
+// complete : control_math_util.cpp
 // 새로운 point_to_line_distance_with_heading 함수 (heading 사용)
 float Control::point_to_line_distance_with_heading(float line_x, float line_y, float line_heading, float point_x, float point_y) {
     // line_heading을 이용해서 직선의 방향벡터 계산
@@ -297,6 +304,7 @@ float Control::point_to_line_distance_with_heading(float line_x, float line_y, f
     return distance;
 }
 
+//complete : control_controller.cpp
 std::pair<float, float> Control::vehicle_control(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx) {
 
     // raceline의 속도 값을 목표 속도로 사용
@@ -310,6 +318,7 @@ std::pair<float, float> Control::vehicle_control(float global_car_x, float globa
     return std::make_pair(stanley_steer, drive_speed);
 }
 
+// complete : control_longitudinal_controller.cpp
 float Control::pid_controller(float target_speed, float current_speed) {
     float dt = 0.1;
 
@@ -332,6 +341,7 @@ float Control::pid_controller(float target_speed, float current_speed) {
     return output;
 }
 
+// complete : control_callback.cpp
 void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg) {
     try {
         // base_link 좌표계의 위치와 자세 추출
@@ -371,6 +381,7 @@ void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPt
     }
 }
 
+// complete : control_util.cpp
 size_t Control::find_closest_waypoint_local_search(float global_current_x, float global_current_y) {
     const size_t search_range = 20; // 검색 범위를 늘림
     const size_t total_waypoints = global_raceline_waypoints_.size();
@@ -402,6 +413,7 @@ size_t Control::find_closest_waypoint_local_search(float global_current_x, float
     return closest_idx;
 }
 
+// complete : control_callback.cpp
 void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg) {
     try {
         // base_link 좌표계의 위치와 자세 추출
@@ -454,6 +466,7 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
     }
 }
 
+// complete : control_metrics.cpp
 void Control::load_raceline_waypoints(const std::string& csv_path) {
     std::ifstream file(csv_path);
     std::string line;
@@ -495,6 +508,8 @@ void Control::load_raceline_waypoints(const std::string& csv_path) {
     RCLCPP_INFO(this->get_logger(), "Loaded %zu raceline waypoints", global_raceline_waypoints_.size());
 }
 
+// complete : control_visualize.cpp
+// local point의 waypoint를 시각화하는 함수
 void Control::publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints) {
     visualization_msgs::msg::Marker marker;
     marker.header.frame_id = "map";
@@ -539,6 +554,8 @@ void Control::publish_lookahead_waypoints_marker(const std::vector<RacelineWaypo
     lookahead_waypoints_marker_pub_->publish(marker);
 }
 
+// complete : control_util.cpp
+// global raceline waypoints를 차량 좌표계로 변환하는 함수
 std::vector<LocalWaypoint> Control::global_to_local(float car_x, float car_y, float car_yaw, const std::vector<RacelineWaypoint>& waypoints) {
     std::vector<LocalWaypoint> local_points;
     float cos_yaw = std::cos(-car_yaw);
@@ -561,6 +578,7 @@ std::vector<LocalWaypoint> Control::global_to_local(float car_x, float car_y, fl
     return local_points;
 }
 
+// complete : control_metrics.cpp
 void Control::initialize_metrics_csv() {
     // evaluation_metrics 폴더 생성
     std::string metrics_dir = "/home/jys/ROS2/f1thebeast_ws/src/control_ws/control/evaluation_metrics/csv_file";
