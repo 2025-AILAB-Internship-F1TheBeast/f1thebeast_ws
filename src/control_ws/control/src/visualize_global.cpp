@@ -19,7 +19,7 @@ public:
         marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_waypoints_marker", 1);
 
         // raceline.csv 경로로 변경
-        std::string raceline_csv_path = "/home/jys/ROS2/f1thebeast_ws/src/control/map/f1tenth_racetracks/Sochi/Sochi_raceline.csv";
+        std::string raceline_csv_path = "/home/jys/ROS2/map_creater/raceline.csv";
         load_raceline_waypoints(raceline_csv_path);
 
         // 타이머로 주기적으로 marker publish (예: 0.5초마다)
@@ -82,11 +82,11 @@ private:
         marker.id = 0;
         marker.type = visualization_msgs::msg::Marker::POINTS;
         marker.action = visualization_msgs::msg::Marker::ADD;
-        marker.scale.x = 0.15;
-        marker.scale.y = 0.15;
+        marker.scale.x = 0.05;
+        marker.scale.y = 0.05;
         // raceline은 초록색으로 표시
-        marker.color.r = 0.0f;
-        marker.color.g = 1.0f;
+        marker.color.r = 1.0f;
+        marker.color.g = 0.0f;
         marker.color.b = 0.0f;
         marker.color.a = 1.0f;
 
