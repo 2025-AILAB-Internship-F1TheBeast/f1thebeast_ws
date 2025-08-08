@@ -1,10 +1,11 @@
-#ifndef CONTROL_HPP
-#define CONTROL_HPP
+#ifndef CONTROL_SIM_HPP
+#define CONTROL_SIM_HPP
 
 #include "ackermann_msgs/msg/ackermann_drive_stamped.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
+#include <std_msgs/msg/float32.hpp>
 #include "visualization_msgs/msg/marker.hpp"
 #include <algorithm>
 #include <cmath>
@@ -19,6 +20,7 @@
 #include <tf2/utils.h>
 #include <chrono>
 #include <iomanip>  // std::put_time 추가
+// #include <Windows.h>
 
 #ifndef PI
 #define PI 3.14159265358979323846
@@ -47,14 +49,6 @@ struct LocalWaypoint {
     LocalWaypoint(float x_, float y_, float heading_) : x(x_), y(y_), heading(heading_) {}
 };
 
-struct DifferentialWaypoint {
-    float dx;
-    float dy;
-    float l2s;
-
-    DifferentialWaypoint(float dx_, float dy_, float l2s_) : dx(dx_), dy(dy_), l2s(l2s_) {}
-};
-
 // Evaluation Metrics 구조체
 struct EvaluationMetrics {
     double timestamp;
@@ -73,15 +67,15 @@ class Control : public rclcpp::Node {
 public:
     rclcpp::TimerBase::SharedPtr marker_timer_;
 
-    Control(float stanley_gain = 3.5f, float soft_gain = 1.0f, bool enable_metrics = false);
+    Control(std::string ini_file_path);
     ~Control();
 
     // 제어 알고리즘 함수들
     float pure_pursuit(float steer_ang_rad, float lookahead_dist);
     float local_planner_based_stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints);
-    float stanley_controller(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
+    float stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float point_to_line_distance_with_heading(float line_x, float line_y, float line_heading, float point_x, float point_y);
-    std::pair<float, float> vehicle_control(float global_car_x, float global_car_y, float yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints, size_t closest_idx);
+    std::pair<float, float> vehicle_control(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float pid_controller(float target_speed, float current_speed);
 
     // 콜백 및 유틸리티 함수들
@@ -99,27 +93,29 @@ public:
     void record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed);
     void save_metrics_to_csv();
 
+    // ini 파일 관련 함수들
+    float ini_load_float(const std::string& section, const std::string& key, float def, const std::string& file_path);
+    bool ini_load_bool(const std::string& section, const std::string& key, bool def, const std::string& file_path);
+    std::string ini_load_string(const std::string& section, const std::string& key, const std::string& def, const std::string& file_path);
+
 private:
     // ROS 관련 멤버
     std::string odom_topic;
     std::string drive_topic;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr initial_odom_subscription_;
-    rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr drive_publisher_;
+    rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr drive_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr lookahead_waypoints_marker_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr target_velocity_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr car_velocity_pub_;
     
     // 시간 관련 멤버 변수
-    rclcpp::Time previous_time_ns;
+    rclcpp::Time pid_previous_time_ns_;
+    rclcpp::Time lpbsc_previous_time_ns_;
 
     // PID 관련 멤버 변수
     float pid_integral_;
     float pid_prev_error_;
-
-    // Stanley 제어기 gain : stanley_gain_ (기본값: 3.5f)
-    // soft_gain_ (기본값: 1.0f)
-    // enable_metrics_ (기본값: false)
-    float stanley_gain_;
-    float soft_gain_;
 
     // Waypoint 추적 관련
     size_t current_closest_idx_;
@@ -127,8 +123,8 @@ private:
     float previous_waypoint_heading = 0.0f;
 
     // 이전 스티어링 각도 저장용
-    float pre_steering_angle = 0.0f;
-    float pre_pre_steering_angle = 0.0f;
+    float pre_steering_angle_ = 0.0f;
+    float pre_pre_steering_angle_ = 0.0f;
 
     // 전역 변수: 로드된 raceline 웨이포인트
     std::vector<RacelineWaypoint> global_raceline_waypoints_;
@@ -143,6 +139,10 @@ private:
     float max_cross_track_error_;
     float max_yaw_error_;
     float max_speed_error_;
+
+    // ini 파일 관련 멤버 변수
+    float ini_test_;
+    std::string ini_file_path_;
 
 };
 
