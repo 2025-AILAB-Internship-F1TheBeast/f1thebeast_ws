@@ -4,11 +4,12 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import yaml
 import os
+import csv
 from skimage.morphology import skeletonize
 
 # 이미지와 YAML 경로 설정
-map_img_path = "/home/jonghun/sim_ws/src/f1tenth_gym_ros/maps/Spielberg_map.png"
-map_yaml_path = "/home/jonghun/sim_ws/src/f1tenth_gym_ros/maps/Spielberg_map.yaml"
+map_img_path = "/home/yongwoo/sim_ws/src/f1tenth_gym_ros/maps/Spielberg_map.png"
+map_yaml_path = "/home/yongwoo/sim_ws/src/f1tenth_gym_ros/maps/Spielberg_map.yaml"
 
 def extract_spielberg_track():
     if not os.path.exists(map_img_path):
@@ -123,12 +124,83 @@ def visualize_all(raw_img, binary, floodfill, overlay):
     plt.tight_layout()
     plt.show()
 
+def save_centerline_to_csv(centerline_points, track_widths, yaml_info, output_file="spielberg_centerline.csv"):
+    """
+    중심선과 폭 정보를 CSV 파일로 저장
+    
+    Args:
+        centerline_points: 중심선 포인트들 (픽셀 좌표)
+        track_widths: 각 포인트에서의 트랙 폭 정보
+        yaml_info: YAML 파일에서 읽은 메타데이터 (resolution, origin 등)
+        output_file: 출력할 CSV 파일명
+    """
+    if not centerline_points:
+        print("중심선 포인트가 없습니다.")
+        return
+    
+    # YAML 정보에서 좌표 변환 파라미터 추출
+    resolution = yaml_info.get('resolution', 0.05) if yaml_info else 0.05  # 기본값 0.05m/pixel
+    origin_x = yaml_info.get('origin', [0, 0, 0])[0] if yaml_info else 0
+    origin_y = yaml_info.get('origin', [0, 0, 0])[1] if yaml_info else 0
+    
+    print(f"좌표 변환 파라미터:")
+    print(f"  Resolution: {resolution} m/pixel")
+    print(f"  Origin: ({origin_x}, {origin_y})")
+    
+    # CSV 파일 생성
+    with open(output_file, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        
+        # 헤더 작성
+        writer.writerow(['#x_m', 'y_m', 'w_tr_right_m', 'w_tr_left_m'])
+        
+        for i, (point, width) in enumerate(zip(centerline_points, track_widths)):
+            x_pixel, y_pixel = point[0], point[1]
+            width_pixel = width[0]  # 좌우 동일하다고 가정
+            
+            # 픽셀 좌표를 실제 좌표(미터)로 변환
+            x_meter = origin_x + x_pixel * resolution
+            y_meter = origin_y + y_pixel * resolution
+            
+            # 폭을 미터로 변환 (양쪽으로 나누어 배치)
+            width_meter = width_pixel * resolution
+            w_tr_right = width_meter / 2.0
+            w_tr_left = width_meter / 2.0
+            
+            # CSV 행 작성
+            writer.writerow([
+                f"{x_meter:.6f}",
+                f"{y_meter:.6f}", 
+                f"{w_tr_right:.6f}",
+                f"{w_tr_left:.6f}",
+                f"{x_pixel}",
+                f"{y_pixel}",
+                f"{width_pixel:.6f}"
+            ])
+    
+    print(f"중심선 데이터가 '{output_file}' 파일로 저장되었습니다.")
+    print(f"총 {len(centerline_points)}개의 포인트가 저장되었습니다.")
+    
+    # 통계 정보 출력
+    if track_widths:
+        widths_pixel = [w[0] for w in track_widths]
+        widths_meter = [w * resolution for w in widths_pixel]
+        
+        print(f"\n트랙 폭 통계:")
+        print(f"  픽셀 단위 - 최소: {min(widths_pixel):.2f}, 최대: {max(widths_pixel):.2f}, 평균: {np.mean(widths_pixel):.2f}")
+        print(f"  미터 단위 - 최소: {min(widths_meter):.3f}m, 최대: {max(widths_meter):.3f}m, 평균: {np.mean(widths_meter):.3f}m")
+
 # 실행
 if __name__ == "__main__":
     try:
         raw_img, binary, result_center, yaml_info = extract_spielberg_track()
         centerline_points, track_widths, overlay = extract_centerline_and_overlay(result_center)
         visualize_all(raw_img, binary, result_center, overlay)
+        
+        # CSV 파일로 저장
+        output_csv = "/home/yongwoo/f1thebeast_ws/minimum_curvature/spielberg_centerline.csv"
+        save_centerline_to_csv(centerline_points, track_widths, yaml_info, output_csv)
+        
     except Exception as e:
         print(f"에러 발생: {e}")
         import traceback
