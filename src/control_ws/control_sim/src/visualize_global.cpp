@@ -5,7 +5,7 @@ VisualizeGlobal::VisualizeGlobal() : Node("visualize_global")
     marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_waypoints_marker", 1);
 
     // raceline.csv 경로로 변경
-    std::string raceline_csv_path = "/home/jys/ROS2/map_creater/raceline.csv";
+    std::string raceline_csv_path = "/home/jys/ROS2/f1tenth_sim/src/f1tenth_gym_ros/maps/f1tenth_racetracks/Spielberg/Spielberg_raceline.csv";
     load_raceline_waypoints(raceline_csv_path);
 
     // 타이머로 주기적으로 marker publish (예: 0.5초마다)
