@@ -681,32 +681,65 @@ class MetricsAnalyzer:
             try:
                 print(f"Loading reference path from: {reference_path_file}")
                 
-                # 수동으로 헤더 이름 지정 (CSV 파일의 주석에서 확인한 구조)
-                header_names = ['s_m', 'x_m', 'y_m', 'psi_rad', 'kappa_radpm', 'vx_mps', 'ax_mps2']
+                # 먼저 파일의 첫 번째 줄을 확인해서 헤더가 있는지 판단
+                with open(reference_path_file, 'r') as f:
+                    first_line = f.readline().strip()
                 
-                # CSV 파일 읽기 (헤더 없이 읽고 수동으로 헤더 지정)
-                ref_df = pd.read_csv(reference_path_file, 
-                                    sep=';',  # 세미콜론 구분자
-                                    comment='#',  # # 주석 행 무시
-                                    header=None,  # 헤더 없음
-                                    names=header_names)  # 수동으로 헤더 이름 지정
-        
+                # 헤더가 있는지 확인 (숫자가 아닌 문자가 포함되어 있으면 헤더로 판단)
+                has_header = not first_line.replace(';', ',').replace('.', '').replace('-', '').replace(',', '').replace(' ', '').isdigit()
+                
+                if has_header:
+                    # 헤더가 있는 경우
+                    ref_df = pd.read_csv(reference_path_file, sep=';', comment='#')
+                    print(f"CSV file has header: {list(ref_df.columns)}")
+                else:
+                    # 헤더가 없는 경우 - 수동으로 헤더 이름 지정
+                    header_names = ['s_m', 'x_m', 'y_m', 'psi_rad', 'kappa_radpm', 'vx_mps', 'ax_mps2']
+                    ref_df = pd.read_csv(reference_path_file, 
+                                        sep=';',
+                                        comment='#',
+                                        header=None,
+                                        names=header_names)
+                    print(f"CSV file without header, assigned columns: {list(ref_df.columns)}")
+                
                 print(f"Reference CSV columns: {list(ref_df.columns)}")
                 print(f"Reference CSV shape: {ref_df.shape}")
-        
+                
+                # 데이터 타입을 명시적으로 숫자로 변환
+                x_col = None
+                y_col = None
+                
+                # 가능한 x, y 컬럼명들 확인
                 if 'x_m' in ref_df.columns and 'y_m' in ref_df.columns:
-                    ref_x = ref_df['x_m'].values
-                    ref_y = ref_df['y_m'].values
+                    x_col, y_col = 'x_m', 'y_m'
+                elif 'x' in ref_df.columns and 'y' in ref_df.columns:
+                    x_col, y_col = 'x', 'y'
+                elif 'current_x' in ref_df.columns and 'current_y' in ref_df.columns:
+                    x_col, y_col = 'current_x', 'current_y'
+                
+                if x_col and y_col:
+                    # 명시적으로 숫자 타입으로 변환
+                    ref_x = pd.to_numeric(ref_df[x_col], errors='coerce').values
+                    ref_y = pd.to_numeric(ref_df[y_col], errors='coerce').values
+                    
+                    # NaN 값 제거
+                    valid_mask = ~(np.isnan(ref_x) | np.isnan(ref_y))
+                    ref_x = ref_x[valid_mask]
+                    ref_y = ref_y[valid_mask]
+                    
                     print(f"Reference path loaded: {len(ref_x)} points")
                     print(f"Reference X range: {ref_x.min():.2f} to {ref_x.max():.2f}")
                     print(f"Reference Y range: {ref_y.min():.2f} to {ref_y.max():.2f}")
                 else:
-                    print(f"Expected columns 'x_m', 'y_m' not found in reference file")
+                    print(f"Expected x,y columns not found in reference file")
                     print(f"Available columns: {list(ref_df.columns)}")
+                    ref_x, ref_y = None, None
+                    
             except Exception as e:
                 print(f"Failed to load reference path: {e}")
                 import traceback
                 traceback.print_exc()
+                ref_x, ref_y = None, None
 
         # Create figure with subplots
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
@@ -909,7 +942,7 @@ def main():
         print("GENERATING VEHICLE PATH HEATMAPS")
         print("="*50)
 
-        reference_path_file = "/home/jys/ROS2/map_creater/raceline.csv"
+        reference_path_file = "/home/jys/ROS2/f1tenth_sim/src/f1tenth_gym_ros/maps/f1tenth_racetracks/Circle/circle_raceline_radius_3m_speed_8mps.csv"
 
         if args.start_time is not None and args.end_time is not None:
             analyzer.plot_vehicle_path_heatmap(start_time=args.start_time, end_time=args.end_time, save_plot=True, output_dir=output_dir, reference_path_file=reference_path_file)

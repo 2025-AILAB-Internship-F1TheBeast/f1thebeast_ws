@@ -73,7 +73,7 @@ public:
 
     // 제어 알고리즘 함수들
     float pure_pursuit(float steer_ang_rad, float lookahead_dist);
-    float local_planner_based_stanley_controller(float car_velocity, std::vector<LocalWaypoint>& waypoints);
+    float dynamic_stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float point_to_line_distance_with_heading(float line_x, float line_y, float line_heading, float point_x, float point_y);
     std::pair<float, float> vehicle_control(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
@@ -87,7 +87,7 @@ public:
     void publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints, float r, float g, float b, std::string frame_id);
     void publish_closest_waypoints_marker(const std::vector<RacelineWaypoint>& closest_waypoints, float r, float g, float b, std::string frame_id);
     std::vector<LocalWaypoint> global_to_local(float car_x, float car_y, float car_yaw, const std::vector<RacelineWaypoint>& waypoints);
-    void publishMarker(float heading_deg, float cross_track_angle, float steering_deg);
+    void publishMarker(float heading_deg, float cross_track_error, float cross_track_angle, float steering_deg);
 
     // Evaluation Metrics 관련 함수들
     void initialize_metrics_csv();
@@ -130,6 +130,7 @@ private:
     // 이전 스티어링 각도 저장용
     float pre_steering_angle_ = 0.0f;
     float pre_pre_steering_angle_ = 0.0f;
+    float prev_base_link_yaw_ = 0.0f;
 
     // 전역 변수: 로드된 raceline 웨이포인트
     std::vector<RacelineWaypoint> global_raceline_waypoints_;
