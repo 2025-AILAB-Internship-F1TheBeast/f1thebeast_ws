@@ -5,7 +5,8 @@ VisualizeGlobal::VisualizeGlobal() : Node("visualize_global")
     marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_waypoints_marker", 1);
 
     // raceline.csv 경로로 변경
-    std::string raceline_csv_path = "/home/jys/ROS2/f1tenth_sim/src/f1tenth_gym_ros/maps/f1tenth_racetracks/Spielberg/Spielberg_raceline.csv";
+    std::string raceline_csv_path = ini_load_string("paths", "raceline_csv", "", "/home/jys/ROS2/f1thebeast_ws/src/control_ws/control_sim/config/param.ini");
+    std::cout << raceline_csv_path << std::endl;
     load_raceline_waypoints(raceline_csv_path);
 
     // 타이머로 주기적으로 marker publish (예: 0.5초마다)
@@ -78,4 +79,44 @@ void VisualizeGlobal::publish_global_waypoints_marker()
     }
 
     marker_pub_->publish(marker);
+}
+
+// 공통 유틸: 섹션/키에서 원문 문자열 얻기
+static bool ini_get_raw(const std::string& section, const std::string& key,
+                        std::string& out, const std::string& file_path)
+{
+    std::ifstream file(file_path);
+    if (!file.is_open()) return false;
+
+    std::string line, current;
+    bool in_target = false;
+    while (std::getline(file, line)) {
+        // trim
+        auto ltrim = [](std::string& s){ s.erase(0, s.find_first_not_of(" \t")); };
+        auto rtrim = [](std::string& s){ s.erase(s.find_last_not_of(" \t")+1); };
+        ltrim(line); rtrim(line);
+        if (line.empty() || line[0]=='#' || line[0]==';') continue;
+
+        if (line.front()=='[' && line.back()==']') {
+            current = line.substr(1, line.size()-2);
+            in_target = (current == section);
+            continue;
+        }
+        if (!in_target) continue;
+
+        auto pos = line.find('=');
+        if (pos == std::string::npos) continue;
+        std::string k = line.substr(0, pos);
+        std::string v = line.substr(pos+1);
+        ltrim(k); rtrim(k); ltrim(v); rtrim(v);
+        if (k == key) { out = v; return true; }
+    }
+    return false;
+}
+
+std::string VisualizeGlobal::ini_load_string(const std::string& section, const std::string& key, const std::string& def, const std::string& file_path)
+{
+    std::string s;
+    if (!ini_get_raw(section, key, s, file_path)) return def;
+    return s;
 }
