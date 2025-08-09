@@ -31,6 +31,8 @@ Control::Control(std::string ini_file_path) :
     // publisher 초기화  
     drive_pub_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(drive_topic, 10);
     lookahead_waypoints_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("lookahead_waypoints_marker", 1);
+    closest_waypoints_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("closest_waypoints_marker", 1);
+    text_visualize_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("text_visualize_marker", 1);
 
     // subscriber 초기화
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
@@ -132,17 +134,13 @@ float Control::local_planner_based_stanley_controller(float car_velocity, std::v
 
 // conplete : control_lateral_controller.cpp
 float Control::stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints) {
-
+    // std::cout << "=====================================================================================" <<  std::endl;
     // Hyperparameter for stanley controller
     const float stanley_gain = ini_load_float("control", "stanley_gain", 0, ini_file_path_);
     const float soft_gain = ini_load_float("control", "soft_gain", 0, ini_file_path_);
 
     // local waypoint의 좌표를 global 좌표계에서 local 좌표계(base_link 기준)로 변환
     std::vector<LocalWaypoint> local_waypoints = global_to_local(base_link_x, base_link_y, base_link_yaw, waypoints);
-
-    for (int i=0; i<local_waypoints.size(); i++) {
-        std::cout << "local_waypoints[" << i << "] : (" << local_waypoints[i].x << ", " << local_waypoints[i].y << ", " << local_waypoints[i].heading << ")" << std::endl;
-    }
 
     // waypoints가 충분한지 확인
     if (waypoints.size() < 2) {
@@ -151,16 +149,18 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
     }
 
     // local 좌표계 기준 차량의 앞축의 위치와 waypoints 사이의 거리를 계산하고 거리가 가장 가까운 waypoint 2개의 인덱스 찾기
-    float front_axle_x = 0.0f + ini_load_float("vehicle", "wheelbase", 0, ini_file_path_);
+    float wheelbase = ini_load_float("vehicle", "wheelbase", 0, ini_file_path_);
+    float lookahead_dist = ini_load_float("control", "lookahead_distance", 0, ini_file_path_);
+    float front_axle_x = 0.0f + wheelbase + lookahead_dist;
     float front_axle_y = 0.0f;
 
-    std::cout << "front_axle_x: " << front_axle_x << ", front_axle_y: " << front_axle_y << std::endl;
+    // std::cout << "front_axle_x: " << front_axle_x << ", front_axle_y: " << front_axle_y << std::endl;
 
     float min_dist = std::numeric_limits<float>::max();
     size_t first_idx = 0;
     size_t second_idx = 0;
 
-    // 가장 가까운 waypoint의 인덱스 찾기
+    // 차량 앞축의 중심점과 가장 가까운 waypoint의 인덱스 찾기
     for (size_t i = 0; i < local_waypoints.size(); i++) {
         float dx = local_waypoints[i].x - front_axle_x;
         float dy = local_waypoints[i].y - front_axle_y;
@@ -171,7 +171,7 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
         }
     }
 
-    // 두 번째로 가까운 waypoint의 인덱스 찾기
+    // 차량 앞축의 중심점과 두 번째로 가까운 waypoint의 인덱스 찾기
     min_dist = std::numeric_limits<float>::max();
     for (size_t i = 0; i < local_waypoints.size(); i++) {
         if (i == first_idx) continue;  // 첫 번째 waypoint는 건너뜀
@@ -188,11 +188,30 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
         std::swap(first_idx, second_idx);  // 항상 첫 번째 인덱스가 두 번째 인덱스보다 작도록 보장
     }
 
+
+    // local_waypoints의 first_idx에 해당하는 정보를 racelinewaypoint와 second_idx를 raceline waypoints의 인덱스로 변환
+    std::vector<RacelineWaypoint> front_axle_closest_waypoints;
+    RacelineWaypoint wp1;
+    wp1.x   = local_waypoints[first_idx].x;
+    wp1.y   = local_waypoints[first_idx].y;
+    wp1.psi = local_waypoints[first_idx].heading;
+    front_axle_closest_waypoints.push_back(wp1);
+
+    RacelineWaypoint wp2;
+    wp2.x   = local_waypoints[second_idx].x;
+    wp2.y   = local_waypoints[second_idx].y;
+    wp2.psi = local_waypoints[second_idx].heading;
+    front_axle_closest_waypoints.push_back(wp2);
+
+    publish_closest_waypoints_marker(front_axle_closest_waypoints, 1.0f, 0.0f, 0.0f, "ego_racecar/base_link");  // 빨간색으로 표시
+
     // 점과 직선 사이의 거리 계산
     float dx = local_waypoints[second_idx].x - local_waypoints[first_idx].x;
     float dy = local_waypoints[second_idx].y - local_waypoints[first_idx].y;
-    float slope = dy / dx;
+    float slope = std::atan2(dy, dx);
     float cross_track_error = point_to_line_distance_with_heading(local_waypoints[first_idx].x, local_waypoints[first_idx].y, slope, front_axle_x, front_axle_y);
+
+    cross_track_error = std::exp(cross_track_error) - 1;
 
     // cross_track_error의 부호 결정
     // 가장 가까운 local waypoint 2개의 y의 평균이 0보다 크면 cross_track_error는 양수
@@ -200,21 +219,22 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
         cross_track_error *= -1.0f;  // 왼쪽에 있으면 음수
     }
 
-    std::cout << "dx: " << dx << ", dy: " << dy << std::endl;
-    std::cout << "cross_track_error: " << cross_track_error << std::endl;
+    // std::cout << "dx: " << dx << ", dy: " << dy << ", slope: " << slope << ", cross_track_error: " << cross_track_error << std::endl;
 
     // 헤딩 에러 계산
-    float heading_error = std::atan2(dy, dx);
+    float heading_error_gain = ini_load_float("control", "heading_error_gain", 0, ini_file_path_);
+    float heading_error = heading_error_gain * std::atan2(dy, dx);
 
-    // 
-    std::cout << "heading_error (before PI2PI): " << heading_error * 180 / M_PI << " degrees" << std::endl;
     heading_error = PI2PI(heading_error);  // -pi ~ pi 범위로 변환
 
-    std::cout << "After heading_error : " << heading_error * 180 / M_PI << " degrees" << std::endl;
-
     // 스티어링 각도 계산
-    float steering_angle = heading_error + std::atan2(stanley_gain * cross_track_error, car_speed + soft_gain);
-    std::cout << "steering_angle: " << steering_angle * 180 / M_PI << " degrees" << std::endl;
+    float cross_track_angle = std::atan2(stanley_gain * cross_track_error, car_speed + soft_gain);
+    float steering_angle = heading_error + cross_track_angle;
+    // std::cout << "After heading_error : " << heading_error * 180 / M_PI << " degrees" << std::endl;
+    // std::cout << "cross track angle : " << cross_track_angle * 180 / M_PI << " degrees" << std::endl;
+    // std::cout << "steering_angle: " << steering_angle * 180 / M_PI << " degrees" << std::endl;
+
+    publishMarker(heading_error, cross_track_angle, steering_angle);
 
     return steering_angle;
 }
@@ -241,10 +261,12 @@ std::pair<float, float> Control::vehicle_control(float base_link_x, float base_l
 
     // raceline의 속도 값을 목표 속도로 사용
     // float target_speed = waypoints[3].vx;
-    float target_speed = ini_load_float("control", "target_velocity", 0, ini_file_path_);
-    // float drive_speed = pid_controller(target_speed, car_speed);
-    float drive_speed = waypoints[3].vx;  // raceline의 속도 값을 목표 속도로 사용
-    // float drive_speed = target_speed;  // PID 컨트롤러를 사용하지 않고 목표 속도를 그대로 사용
+    // float target_speed = ini_load_float("control", "target_velocity", 0, ini_file_path_);
+    float speed_scale = ini_load_float("control", "speed_scale", 1.0f, ini_file_path_);
+    float target_speed = speed_scale * waypoints[0].vx;  // raceline의 속도 값을 목표 속도로 사용
+    float drive_speed = speed_scale * waypoints[0].vx;  // raceline의 속도 값을 목표 속도로 사용
+    std::cout << "current_closest_idx_: " << current_closest_idx_ << std::endl;
+    std::cout << "target_speed: " << target_speed << ", drive_speed: " << drive_speed << std::endl;
 
     // stanley controller 호출해서 스티어링 각도 계산
     float steering_angle = stanley_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
@@ -293,10 +315,10 @@ void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPt
         RCLCPP_INFO(this->get_logger(), "Initial pose callback triggered");
 
         // base_link 좌표계의 위치와 자세 추출
-        float base_link_x = pose_msg->pose.position.x;
-        float base_link_y = pose_msg->pose.position.y;
-        float global_current_yaw = tf2::getYaw(pose_msg->pose.orientation);
-        
+        float base_link_x = odom_msg->pose.pose.position.x;
+        float base_link_y = odom_msg->pose.pose.position.y;
+        float global_current_yaw = tf2::getYaw(odom_msg->pose.pose.orientation);
+
         // base_link에서 front_wheel로 변환 (wheelbase만큼 앞쪽으로 이동)
         const float wheelbase = ini_load_float("vehicle", "wheelbase", 0, ini_file_path_);
         float global_current_x = base_link_x + wheelbase * std::cos(global_current_yaw);
@@ -320,12 +342,12 @@ void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPt
                     current_closest_idx_, min_dist);
         
         // 초기 odometry 구독 해제하고 일반 odometry 구독 시작
-        initial_pose_subscription_.reset();
-        pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-            "/pf/viz/inferred_pose", 10, std::bind(&Control::pose_callback, this, std::placeholders::_1));
+        initial_odom_subscription_.reset();
+        odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
+            "/ego_racecar/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
 
     } catch (const std::exception &e) {
-        RCLCPP_ERROR(this->get_logger(), "Error during initial_pose_callback: %s", e.what());
+        RCLCPP_ERROR(this->get_logger(), "Error during initial_odom_callback: %s", e.what());
     }
 }
 
@@ -368,7 +390,7 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
         float base_link_y = odom_msg->pose.pose.position.y;
         float base_link_yaw = tf2::getYaw(odom_msg->pose.pose.orientation);
 
-        std::cout << "base_link_x: " << base_link_x << ", base_link_y: " << base_link_y << ", base_link_yaw: " << base_link_yaw << std::endl;
+        // std::cout << "base_link_x: " << base_link_x << ", base_link_y: " << base_link_y << ", base_link_yaw: " << base_link_yaw << std::endl;
 
         // global 좌표계 기준 차량의 앞축 위치 계산
         const float wheelbase = ini_load_float("vehicle", "wheelbase", 0, ini_file_path_);
@@ -382,20 +404,22 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
             odom_msg->twist.twist.linear.y * odom_msg->twist.twist.linear.y);
 
         // 효율적인 가장 가까운 waypoint 찾기 (순환 경로 고려)
-        // base_link의 위치를 기준으로 가장 가까운 waypoint 찾기
-        size_t closest_idx = find_closest_waypoint_local_search(front_axle_x, front_axle_y);
+        // 차량 앞축의 중심점을 기준으로 가장 가까운 waypoint 찾기
+        size_t closest_idx = find_closest_waypoint_local_search(base_link_x, base_link_y);
         current_closest_idx_ = closest_idx; // 현재 인덱스 업데이트
 
         // lookahead waypoints 생성
-        // 앞 뒤로 3개씩의 waypoints, 총 7개를 생성
+        // base_link 위치와 가장 가까운 waypoint부터 시작하여 15개의 lookahead waypoints 생성
         std::vector<RacelineWaypoint> lookahead_waypoints;
-        for (int i = -3; i < 4; i++) {
-            size_t idx = (closest_idx + i + global_raceline_waypoints_.size()) % global_raceline_waypoints_.size();  // 순환 인덱스
+        for (int i = 0; i < 15; i++) {
+            size_t idx = (i + closest_idx + global_raceline_waypoints_.size()) % global_raceline_waypoints_.size();  // 순환 인덱스
+            // std::cout << "lookahead_waypoints[" << i << "] index: " << idx << std::endl;
             lookahead_waypoints.push_back(global_raceline_waypoints_[idx]);
+            std::cout << "lookahead_waypoints[" << i << "] vx: " << lookahead_waypoints[i].vx << std::endl;
         }
 
         // lookahead waypoints 출력
-        publish_lookahead_waypoints_marker(lookahead_waypoints);
+        publish_lookahead_waypoints_marker(lookahead_waypoints, 0.0f, 1.0f, 0.0f, "map");  // 초록색으로 표시
 
         // steering angle과 drive speed 계산
         auto [steering_angle, drive_speed] = vehicle_control(base_link_x, base_link_y, base_link_yaw, car_current_speed, lookahead_waypoints);
@@ -411,7 +435,11 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
         auto drive_msg = ackermann_msgs::msg::AckermannDriveStamped();
         drive_msg.drive.steering_angle = steering_angle;
         drive_msg.drive.speed = drive_speed;
-        drive_pub_->publish(drive_msg);
+
+        float control_mode = ini_load_float("control", "control_mode", 0, ini_file_path_);
+        if (control_mode == 1.0) {  // Drive mode 0 : Manual control, 1 : Auto control
+            drive_pub_->publish(drive_msg);
+        }
     }
     catch (const std::exception &e) {
         RCLCPP_ERROR(this->get_logger(), "Error during odom_callback: %s", e.what());
@@ -462,7 +490,7 @@ void Control::load_raceline_waypoints(const std::string& csv_path) {
 
 // complete : control_visualize.cpp
 // local point의 waypoint를 시각화하는 함수
-void Control::publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints) {
+void Control::publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints, float r, float g, float b, std::string frame_id) {
     visualization_msgs::msg::Marker marker;
     marker.header.frame_id = "map";
     marker.header.stamp = this->now();
@@ -470,9 +498,9 @@ void Control::publish_lookahead_waypoints_marker(const std::vector<RacelineWaypo
     marker.id = 1;
     marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;  // 삼각형 대신 구(원) 사용
     marker.action = visualization_msgs::msg::Marker::ADD;
-    marker.scale.x = 0.2;  // 원의 직경 (x축)
-    marker.scale.y = 0.2;  // 원의 직경 (y축)
-    marker.scale.z = 0.1;  // 원의 높이 (z축)
+    marker.scale.x = 0.04;  // 원의 직경 (x축)
+    marker.scale.y = 0.04;  // 원의 직경 (y축)
+    marker.scale.z = 0.04;  // 원의 높이 (z축)
     
     for (size_t i = 0; i < lookahead_waypoints.size(); ++i) {
         const auto& wp = lookahead_waypoints[i];
@@ -488,22 +516,52 @@ void Control::publish_lookahead_waypoints_marker(const std::vector<RacelineWaypo
         // 색상 설정
         std_msgs::msg::ColorRGBA color;
         color.a = 1.0f;
-        
-        // 가장 가까운 waypoint (인덱스 3)는 검정색, 나머지는 초록색
-        if (i == 3) {  // 가장 가까운 waypoint
-            color.r = 0.0f;
-            color.g = 0.0f;
-            color.b = 0.0f;  // 검정색
-        } else {  // 나머지 waypoints
-            color.r = 0.0f;
-            color.g = 1.0f;
-            color.b = 0.0f;  // 초록색
-        }
-        
+        color.r = r;
+        color.g = g;
+        color.b = b;
+
         marker.colors.push_back(color);
     }
     
     lookahead_waypoints_marker_pub_->publish(marker);
+}
+
+
+// front_axle과 가장 가까운 waypoint 2개를 시각화하는 함수
+void Control::publish_closest_waypoints_marker(const std::vector<RacelineWaypoint>& closest_waypoints, float r, float g, float b, std::string frame_id) {
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = frame_id;
+    marker.header.stamp = this->now();
+    marker.ns = "closest_raceline";
+    marker.id = 1;
+    marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;  // 삼각형 대신 구(원) 사용
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = 0.04;  // 원의 직경 (x축)
+    marker.scale.y = 0.04;  // 원의 직각 (y축)
+    marker.scale.z = 0.04;  // 원의 높이 (z축)
+
+    for (size_t i = 0; i < closest_waypoints.size(); ++i) {
+        const auto& wp = closest_waypoints[i];
+
+        // 원의 중심점 생성
+        geometry_msgs::msg::Point point;
+        point.x = wp.x;
+        point.y = wp.y;
+        point.z = 0.05;  // 약간 위로 올림
+
+        marker.points.push_back(point);
+
+        // 색상 설정
+        std_msgs::msg::ColorRGBA color;
+        color.a = 1.0f;
+        color.r = r;
+        color.g = g;
+        color.b = b;
+
+        marker.colors.push_back(color);
+    }
+
+    closest_waypoints_marker_pub_->publish(marker);
 }
 
 // complete : control_util.cpp
@@ -609,7 +667,7 @@ float Control::calculate_yaw_error(float car_yaw, size_t closest_idx) {
 // 차량의 현재 위치, 자세와 가장 가까운 waypoint 인덱스를 기록
 // 속도는 없음
 
-void Control::record_metrics(float car_x, float car_y, float car_yaw , size_t closest_idx) {
+void Control::record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed) {
     // 현재 시간 계산 (시작 시간으로부터의 경과 시간)
     std::cout << "Recording metrics..." << std::endl;
     auto current_time = std::chrono::steady_clock::now();
@@ -753,4 +811,36 @@ std::string Control::ini_load_string(const std::string& section, const std::stri
     std::string s;
     if (!ini_get_raw(section, key, s, file_path)) return def;
     return s;
+}
+
+void Control::publishMarker(float heading_deg, float cross_track_deg, float steering_deg) {
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = "ego_racecar/base_link";  // base_link 좌표계에서 표시
+    marker.header.stamp = this->now();
+    marker.ns = "stanley_debug";
+    marker.id = 1;
+    marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+
+    // RViz에서 보기 좋게 위치
+    marker.pose.position.x = 1.0;
+    marker.pose.position.y = -1.0;
+    marker.pose.position.z = 2.0;
+    marker.pose.orientation.w = 1.0;
+
+    marker.scale.z = 0.2;   // 글자 크기
+    marker.color.r = 1.0;
+    marker.color.g = 1.0;
+    marker.color.b = 1.0;
+    marker.color.a = 1.0;
+
+    std::ostringstream ss;
+    ss.setf(std::ios::fixed);
+    ss.precision(2);
+    ss << "Heading error: " << heading_deg * 180 / M_PI << " deg\n"
+       << "Cross track angle: " << cross_track_deg * 180 / M_PI << " deg\n"
+       << "Steering angle: " << steering_deg * 180 / M_PI << " deg";
+    marker.text = ss.str();
+
+    text_visualize_pub_->publish(marker);
 }

@@ -80,18 +80,20 @@ public:
     float pid_controller(float target_speed, float current_speed);
 
     // 콜백 및 유틸리티 함수들
-    void pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr pose_msg);
-    void initial_pose_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr pose_msg);
+    void odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
+    void initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
     size_t find_closest_waypoint_local_search(float global_current_x, float global_current_y);
     void load_raceline_waypoints(const std::string& csv_path);
-    void publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints);
+    void publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints, float r, float g, float b, std::string frame_id);
+    void publish_closest_waypoints_marker(const std::vector<RacelineWaypoint>& closest_waypoints, float r, float g, float b, std::string frame_id);
     std::vector<LocalWaypoint> global_to_local(float car_x, float car_y, float car_yaw, const std::vector<RacelineWaypoint>& waypoints);
+    void publishMarker(float heading_deg, float cross_track_angle, float steering_deg);
 
     // Evaluation Metrics 관련 함수들
     void initialize_metrics_csv();
     float calculate_cross_track_error(float car_x, float car_y, size_t closest_idx);
     float calculate_yaw_error(float car_yaw, size_t closest_idx);
-    void record_metrics(float car_x, float car_y, float car_yaw, size_t closest_idx);
+    void record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed);
     void save_metrics_to_csv();
 
     // ini 파일 관련 함수들
@@ -107,8 +109,10 @@ private:
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr initial_odom_subscription_;
     rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr drive_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr lookahead_waypoints_marker_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr closest_waypoints_marker_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr target_velocity_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr car_velocity_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr text_visualize_pub_;
     
     // 시간 관련 멤버 변수
     rclcpp::Time pid_previous_time_ns_;
