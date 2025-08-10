@@ -47,8 +47,9 @@ struct LocalWaypoint {
     float x;
     float y;
     float heading;
-    
-    LocalWaypoint(float x_, float y_, float heading_) : x(x_), y(y_), heading(heading_) {}
+    float kappa;  // 곡률 (선택적, 필요시 사용)
+
+    LocalWaypoint(float x_, float y_, float heading_, float kappa_ = 0.0f) : x(x_), y(y_), heading(heading_), kappa(kappa_) {}
 };
 
 // Evaluation Metrics 구조체
@@ -74,7 +75,7 @@ public:
 
     // 제어 알고리즘 함수들
     float pure_pursuit(float steer_ang_rad, float lookahead_dist);
-    float dynamic_stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
+    float adaptive_stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float point_to_line_distance_with_heading(float line_x, float line_y, float line_heading, float point_x, float point_y);
     std::pair<float, float> vehicle_control(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
@@ -136,6 +137,10 @@ private:
     float pre_steering_angle_ = 0.0f;
     float pre_pre_steering_angle_ = 0.0f;
     float prev_base_link_yaw_ = 0.0f;
+
+    // 차 속도 관련 멤버 변수
+    float publish_car_speed_ = 0.0f;  // 퍼블리시
+    float publish_lookahead_distance_ = 0.0f;  // 퍼블리시
 
     // 전역 변수: 로드된 raceline 웨이포인트
     std::vector<RacelineWaypoint> global_raceline_waypoints_;
