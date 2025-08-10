@@ -18,6 +18,7 @@
 #include <vector>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <custom_msgs/msg/wall_collision.hpp>
 #include <tf2/utils.h>
 #include <chrono>
 #include <iomanip>  // std::put_time 추가
@@ -46,8 +47,9 @@ struct LocalWaypoint {
     float x;
     float y;
     float heading;
-    
-    LocalWaypoint(float x_, float y_, float heading_) : x(x_), y(y_), heading(heading_) {}
+    float kappa;  // 곡률 (선택적, 필요시 사용)
+
+    LocalWaypoint(float x_, float y_, float heading_, float kappa_ = 0.0f) : x(x_), y(y_), heading(heading_), kappa(kappa_) {}
 };
 
 // Evaluation Metrics 구조체
@@ -73,13 +75,14 @@ public:
 
     // 제어 알고리즘 함수들
     float pure_pursuit(float steer_ang_rad, float lookahead_dist);
-    float dynamic_stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
+    float adaptive_stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float stanley_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float point_to_line_distance_with_heading(float line_x, float line_y, float line_heading, float point_x, float point_y);
     std::pair<float, float> vehicle_control(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints);
     float pid_controller(float target_speed, float current_speed);
 
     // 콜백 및 유틸리티 함수들
+    void wall_collision_callback(const custom_msgs::msg::WallCollision::SharedPtr msg);
     void odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
     void initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
     size_t find_closest_waypoint_local_search(float global_current_x, float global_current_y);
@@ -107,6 +110,8 @@ private:
     std::string drive_topic;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr initial_odom_subscription_;
+    rclcpp::Subscription<custom_msgs::msg::WallCollision>::SharedPtr wall_collision_subscription_;
+
     rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr drive_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr lookahead_waypoints_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr closest_waypoints_marker_pub_;
@@ -126,11 +131,16 @@ private:
     size_t current_closest_idx_;
     double previous_velocity_;  // 이전 속도 저장용
     float previous_waypoint_heading = 0.0f;
+    bool wall_collision_ = false;
 
     // 이전 스티어링 각도 저장용
     float pre_steering_angle_ = 0.0f;
     float pre_pre_steering_angle_ = 0.0f;
     float prev_base_link_yaw_ = 0.0f;
+
+    // 차 속도 관련 멤버 변수
+    float publish_car_speed_ = 0.0f;  // 퍼블리시
+    float publish_lookahead_distance_ = 0.0f;  // 퍼블리시
 
     // 전역 변수: 로드된 raceline 웨이포인트
     std::vector<RacelineWaypoint> global_raceline_waypoints_;
