@@ -37,6 +37,10 @@ Control::Control(std::string ini_file_path) :
     // subscriber 초기화
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
         "/ego_racecar/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
+    
+    wall_collision_subscription_ = this->create_subscription<custom_msgs::msg::WallCollision>(
+    "/wall_collision", 10, 
+    std::bind(&Control::wall_collision_callback, this, std::placeholders::_1));
 
     // raceline.csv로 경로 변경 /home/jys/ROS2/f1thebeast_ws/src/control_ws/control/map/f1tenth_racetracks
     std::string raceline_csv_path = ini_load_string("paths", "raceline_csv", "", ini_file_path_);
@@ -434,10 +438,10 @@ size_t Control::find_closest_waypoint_local_search(float global_current_x, float
     }
     
     // 디버그 출력 추가
-    if (current_closest_idx_ > total_waypoints - 50) {  // 끝 부분에 가까워지면
-        RCLCPP_INFO(this->get_logger(), "Near end: current_idx=%zu, new_idx=%zu, total=%zu, dist=%.2f", 
-                    current_closest_idx_, closest_idx, total_waypoints, min_dist);
-    }
+    // if (current_closest_idx_ > total_waypoints - 50) {  // 끝 부분에 가까워지면
+    //     RCLCPP_INFO(this->get_logger(), "Near end: current_idx=%zu, new_idx=%zu, total=%zu, dist=%.2f", 
+    //                 current_closest_idx_, closest_idx, total_waypoints, min_dist);
+    // }
     
     return closest_idx;
 }
@@ -462,10 +466,19 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
             odom_msg->twist.twist.linear.x * odom_msg->twist.twist.linear.x +
             odom_msg->twist.twist.linear.y * odom_msg->twist.twist.linear.y);
 
+
+        // wall_collision이 발생하면 current_closest_idx_를 0으로 초기화
+        if (wall_collision_) {
+            RCLCPP_WARN(this->get_logger(), "Wall collision detected, resetting current_closest_idx_ to 0");
+            current_closest_idx_ = 0;
+            wall_collision_ = false;  // 충돌 상태 초기화
+        }
+
         // 효율적인 가장 가까운 waypoint 찾기 (순환 경로 고려)
         // 차량 앞축의 중심점을 기준으로 가장 가까운 waypoint 찾기
         size_t closest_idx = find_closest_waypoint_local_search(base_link_x, base_link_y);
         current_closest_idx_ = closest_idx; // 현재 인덱스 업데이트
+        RCLCPP_INFO(this->get_logger(), "Closest waypoint index: %zu", closest_idx);
 
         // lookahead waypoints 생성
         // base_link 위치와 가장 가까운 waypoint부터 시작하여 lookahead_waypoint_num개의 lookahead waypoints 생성
@@ -924,4 +937,9 @@ void Control::publishMarker(float heading_deg, float cross_track_error, float cr
     marker.text = ss.str();
 
     text_visualize_pub_->publish(marker);
+}
+
+void Control::wall_collision_callback(const custom_msgs::msg::WallCollision::SharedPtr msg)
+{
+    wall_collision_ = msg->collision;
 }

@@ -18,6 +18,7 @@
 #include <vector>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <custom_msgs/msg/wall_collision.hpp>
 #include <tf2/utils.h>
 #include <chrono>
 #include <iomanip>  // std::put_time 추가
@@ -80,6 +81,7 @@ public:
     float pid_controller(float target_speed, float current_speed);
 
     // 콜백 및 유틸리티 함수들
+    void wall_collision_callback(const custom_msgs::msg::WallCollision::SharedPtr msg);
     void odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
     void initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg);
     size_t find_closest_waypoint_local_search(float global_current_x, float global_current_y);
@@ -107,6 +109,8 @@ private:
     std::string drive_topic;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr initial_odom_subscription_;
+    rclcpp::Subscription<custom_msgs::msg::WallCollision>::SharedPtr wall_collision_subscription_;
+
     rclcpp::Publisher<ackermann_msgs::msg::AckermannDriveStamped>::SharedPtr drive_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr lookahead_waypoints_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr closest_waypoints_marker_pub_;
@@ -126,6 +130,7 @@ private:
     size_t current_closest_idx_;
     double previous_velocity_;  // 이전 속도 저장용
     float previous_waypoint_heading = 0.0f;
+    bool wall_collision_ = false;
 
     // 이전 스티어링 각도 저장용
     float pre_steering_angle_ = 0.0f;

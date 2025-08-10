@@ -18,6 +18,7 @@ foreach(PACKAGE
   std_msgs
   tf2
   tf2_geometry_msgs
+  custom_msgs
   tf2_ros
   Eigen3)
 
@@ -33,7 +34,7 @@ add_executable(control_sim_node src/control_sim_node.cpp src/control_sim.cpp)
 add_executable(visualize_global_node src/visualize_global_node.cpp src/visualize_global.cpp)
 
 ament_target_dependencies(control_sim_node
-  rclcpp geometry_msgs ackermann_msgs nav_msgs sensor_msgs std_msgs visualization_msgs tf2 tf2_geometry_msgs
+  rclcpp geometry_msgs ackermann_msgs nav_msgs sensor_msgs std_msgs visualization_msgs tf2 tf2_geometry_msgs custom_msgs
   tf2_ros
 )
 
