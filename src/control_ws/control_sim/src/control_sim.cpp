@@ -36,6 +36,8 @@ Control::Control(std::string ini_file_path) :
     text_visualize_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("text_visualize_marker", 1);
 
     // subscriber 초기화
+    // 지상 : /pf/pose/odom
+    // GT : /ego_racecar/odom
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
         "/pf/pose/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
     
