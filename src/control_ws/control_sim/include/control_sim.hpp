@@ -117,6 +117,7 @@ private:
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr closest_waypoints_marker_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr target_velocity_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr car_velocity_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr cross_track_error_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr text_visualize_pub_;
     
     // 시간 관련 멤버 변수
