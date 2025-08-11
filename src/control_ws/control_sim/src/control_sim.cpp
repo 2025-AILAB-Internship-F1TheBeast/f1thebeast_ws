@@ -27,6 +27,7 @@ Control::Control(std::string ini_file_path) :
     // target velocity publisher 초기화
     target_velocity_pub_ = this->create_publisher<std_msgs::msg::Float32>("target_velocity", 10);
     car_velocity_pub_ = this->create_publisher<std_msgs::msg::Float32>("car_velocity", 10);
+    cross_track_error_pub_ = this->create_publisher<std_msgs::msg::Float32>("cross_track_error", 10);
 
     // publisher 초기화  
     drive_pub_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(drive_topic, 10);
@@ -179,6 +180,7 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
     // 가장 가까운 local waypoint 2개의 y의 평균이 0보다 크면 cross_track_error는 양수
     if ((local_waypoints[first_idx].y + local_waypoints[second_idx].y) / 2 < 0) {
         cross_track_error *= -1.0f;  // 왼쪽에 있으면 음수
+        original_cross_track_error *= -1.0;
     }
 
     // std::cout << "dx: " << dx << ", dy: " << dy << ", slope: " << slope << ", cross_track_error: " << cross_track_error << std::endl;
@@ -197,6 +199,11 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
     // std::cout << "steering_angle: " << steering_angle * 180 / M_PI << " degrees" << std::endl;
 
     publishMarker(heading_error, original_cross_track_error, cross_track_angle, steering_angle);
+
+    // cross track error publish
+    std_msgs::msg::Float32 cross_track_error_msg;
+    cross_track_error_msg.data = original_cross_track_error;
+    cross_track_error_pub_->publish(cross_track_error_msg);
 
     return steering_angle;
 }
@@ -295,6 +302,7 @@ float Control::adaptive_stanley_controller(float base_link_x, float base_link_y,
     // 가장 가까운 local waypoint 2개의 y의 평균이 0보다 크면 cross_track_error는 양수
     if ((local_waypoints[first_idx].y + local_waypoints[second_idx].y) / 2 < 0) {
         cross_track_error *= -1.0f;  // 왼쪽에 있으면 음수
+        original_cross_track_error *= -1.0f;
     }
 
     // std::cout << "dx: " << dx << ", dy: " << dy << ", slope: " << slope << ", cross_track_error: " << cross_track_error << std::endl;
@@ -313,6 +321,10 @@ float Control::adaptive_stanley_controller(float base_link_x, float base_link_y,
     // std::cout << "steering_angle: " << steering_angle * 180 / M_PI << " degrees" << std::endl;
 
     publishMarker(heading_error, original_cross_track_error, cross_track_angle, steering_angle);
+    // cross track error publish
+    std_msgs::msg::Float32 cross_track_error_msg;
+    cross_track_error_msg.data = original_cross_track_error;
+    cross_track_error_pub_->publish(cross_track_error_msg);
 
     return steering_angle;
 
