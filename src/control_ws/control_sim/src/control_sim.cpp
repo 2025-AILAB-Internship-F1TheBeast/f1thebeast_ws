@@ -36,7 +36,7 @@ Control::Control(std::string ini_file_path) :
 
     // subscriber 초기화
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/ego_racecar/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
+        "/pf/pose/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
     
     wall_collision_subscription_ = this->create_subscription<custom_msgs::msg::WallCollision>(
     "/wall_collision", 10, 
@@ -434,7 +434,7 @@ void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPt
         // 초기 odometry 구독 해제하고 일반 odometry 구독 시작
         initial_odom_subscription_.reset();
         odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/ego_racecar/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
+            "/pf/pose/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
 
     } catch (const std::exception &e) {
         RCLCPP_ERROR(this->get_logger(), "Error during initial_odom_callback: %s", e.what());
