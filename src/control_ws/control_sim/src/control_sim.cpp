@@ -39,7 +39,7 @@ Control::Control(std::string ini_file_path) :
     // 지상 : /pf/pose/odom
     // GT : /ego_racecar/odom
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/pf/pose/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
+        "/ego_racecar/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
     
     wall_collision_subscription_ = this->create_subscription<custom_msgs::msg::WallCollision>(
     "/wall_collision", 10, 
@@ -70,6 +70,103 @@ Control::~Control() {
             metrics_file_.close();
         }
     }
+}
+
+// Pure Pursuit 컨트롤러 수정 및 완성
+float Control::pure_pursuit_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints) {
+    publish_car_speed_ = car_speed;  // 퍼블리시할 차량 속도
+    
+    // waypoints가 충분한지 확인
+    if (waypoints.size() < 2) {
+        RCLCPP_ERROR(this->get_logger(), "Not enough waypoints for Pure Pursuit: %zu", waypoints.size());
+        return 0.0f;
+    }
+
+    // Pure Pursuit 파라미터 로드
+    float lookahead_distance = ini_load_float("control", "lookahead_distance", 1.0f, ini_file_path_);
+    const float wheelbase = ini_load_float("vehicle", "wheelbase", 0.32f, ini_file_path_);
+    publish_lookahead_distance_ = lookahead_distance;  // 퍼블리시할 lookahead distance
+
+    // local waypoint의 좌표를 global 좌표계에서 local 좌표계(base_link 기준)로 변환
+    std::vector<LocalWaypoint> local_waypoints = global_to_local(base_link_x, base_link_y, base_link_yaw, waypoints);
+
+    // Lookahead point 찾기
+    float best_distance = std::numeric_limits<float>::max();
+    size_t target_idx = 0;
+    float target_x = 0.0f, target_y = 0.0f;
+    bool found_target = false;
+
+    // 먼저 lookahead distance와 가장 가까운 거리에 있는 점을 찾기
+    for (size_t i = 0; i < local_waypoints.size(); i++) {
+        float distance = std::sqrt(local_waypoints[i].x * local_waypoints[i].x + 
+                                 local_waypoints[i].y * local_waypoints[i].y);
+        
+        // lookahead distance보다 크거나 같고, 차량 앞쪽에 있는 점 중에서 가장 가까운 점
+        if (distance >= lookahead_distance && local_waypoints[i].x > 0) {
+            if (std::abs(distance - lookahead_distance) < best_distance) {
+                best_distance = std::abs(distance - lookahead_distance);
+                target_idx = i;
+                target_x = local_waypoints[i].x;
+                target_y = local_waypoints[i].y;
+                found_target = true;
+            }
+        }
+    }
+
+    // 적절한 target이 없으면 가장 먼 앞쪽 점 사용
+    if (!found_target) {
+        float max_x = -std::numeric_limits<float>::max();
+        for (size_t i = 0; i < local_waypoints.size(); i++) {
+            if (local_waypoints[i].x > max_x) {
+                max_x = local_waypoints[i].x;
+                target_idx = i;
+                target_x = local_waypoints[i].x;
+                target_y = local_waypoints[i].y;
+                found_target = true;
+            }
+        }
+    }
+
+    if (!found_target) {
+        RCLCPP_WARN(this->get_logger(), "No valid target point found for Pure Pursuit");
+        return 0.0f;
+    }
+
+    // Target point 시각화
+    std::vector<RacelineWaypoint> target_waypoints;
+    RacelineWaypoint target_wp;
+    target_wp.x = target_x;
+    target_wp.y = target_y;
+    target_wp.psi = 0.0f;
+    target_waypoints.push_back(target_wp);
+    publish_closest_waypoints_marker(target_waypoints, 1.0f, 0.0f, 0.0f, "ego_racecar/base_link");  // 빨간색으로 표시
+
+    // Pure Pursuit 알고리즘
+    float lookahead_angle = std::atan2(target_y, target_x);
+    float lookahead_dist = std::sqrt(target_x * target_x + target_y * target_y);
+    
+    // Steering angle 계산
+    float steering_angle = std::atan2(2.0f * wheelbase * std::sin(lookahead_angle), lookahead_dist);
+
+    // Cross track error 계산 (디버깅용)
+    float cross_track_error = point_to_line_distance_with_heading(
+        local_waypoints[target_idx].x, local_waypoints[target_idx].y, 
+        local_waypoints[target_idx].heading, 0.0f, 0.0f);
+    
+    // 부호 결정
+    if (target_y < 0) {
+        cross_track_error *= -1.0f;
+    }
+
+    // 디버그 정보 출력
+    publishMarker(0.0f, cross_track_error, lookahead_angle, steering_angle);
+
+    // Cross track error publish
+    std_msgs::msg::Float32 cross_track_error_msg;
+    cross_track_error_msg.data = cross_track_error;
+    cross_track_error_pub_->publish(cross_track_error_msg);
+
+    return steering_angle;
 }
 
 // conplete : control_lateral_controller.cpp
@@ -262,14 +359,16 @@ float Control::adaptive_stanley_controller(float base_link_x, float base_link_y,
 
     float cross_track_error = point_to_line_distance_with_heading(local_waypoints[first_idx].x, local_waypoints[first_idx].y, local_waypoints[first_idx].heading, front_axle_x, front_axle_y);
     float original_cross_track_error = cross_track_error;  // 원래의 cross_track_error 저장
+    float long_lookahead_dist = ini_load_float("adaptive-stanley", "long_lookahead_distance", 0, ini_file_path_);
+    float short_lookahead_dist = ini_load_float("adaptive-stanley", "short_lookahead_distance", 0, ini_file_path_);
 
     // cross_track_error의 부호 결정
     // 가장 가까운 local waypoint 2개의 y의 평균이 0보다 크면 cross_track_error는 양수
     if ((local_waypoints[first_idx].y + local_waypoints[second_idx].y)/2 * local_waypoints[first_idx].kappa > 0) {
-        lookahead_dist = 0.5;
+        lookahead_dist = long_lookahead_dist;  // 오른쪽에 있으면 긴 lookahead distance
     }
     else {
-        lookahead_dist = 0.1;
+        lookahead_dist = short_lookahead_dist;  // 왼쪽에 있으면 짧은 lookahead distance
     }
     
     front_axle_x = 0.0f + wheelbase + lookahead_dist;
@@ -363,7 +462,7 @@ std::pair<float, float> Control::vehicle_control(float base_link_x, float base_l
 
     // stanley controller 호출해서 스티어링 각도 계산
     float steering_angle = 0.0f;
-    bool adaptive_stanley = ini_load_bool("control", "adaptive_stanley", 0, ini_file_path_);
+    bool adaptive_stanley = ini_load_bool("adaptive-stanley", "adaptive_stanley", 0, ini_file_path_);
     if (adaptive_stanley) {
         // Adaptive Stanley Controller 사용
         RCLCPP_INFO(this->get_logger(), "Using Adaptive Stanley Controller");
@@ -374,6 +473,8 @@ std::pair<float, float> Control::vehicle_control(float base_link_x, float base_l
         RCLCPP_INFO(this->get_logger(), "Using Stanley Controller");
         steering_angle = stanley_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
     }
+
+    steering_angle = pure_pursuit_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
 
     // target_speed와 car_speed를 퍼블리시
     std_msgs::msg::Float32 target_velocity_msg;
@@ -448,7 +549,7 @@ void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPt
         // 초기 odometry 구독 해제하고 일반 odometry 구독 시작
         initial_odom_subscription_.reset();
         odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/pf/pose/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
+            "/ego_racecar/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
 
     } catch (const std::exception &e) {
         RCLCPP_ERROR(this->get_logger(), "Error during initial_odom_callback: %s", e.what());
@@ -551,9 +652,12 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
         drive_msg.drive.steering_angle = steering_angle;
         drive_msg.drive.speed = drive_speed;
 
+        std::cout << "drive_speed : " << drive_speed << ", target_speed: " << target_speed << std::endl;
+
         float control_mode = ini_load_float("control", "control_mode", 0, ini_file_path_);
+        std::cout << "control_mode: " << control_mode << std::endl;
         if (control_mode == 1.0) {  // Drive mode 0 : Manual control, 1 : Auto control
-            // std::cout << "Publishing drive message with steering angle: " << steering_angle * 180 / M_PI << " degrees, speed: " << drive_speed << std::endl;
+            std::cout << "Publishing drive message with steering angle: " << steering_angle * 180 / M_PI << " degrees, speed: " << drive_speed << std::endl;
             drive_pub_->publish(drive_msg);
         }
     }
