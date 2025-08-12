@@ -638,7 +638,9 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
 
         // steering angle과 drive speed 계산
         auto [steering_angle, drive_speed] = vehicle_control(base_link_x, base_link_y, base_link_yaw, car_current_speed, lookahead_waypoints);
-
+        
+        // 최소 속도 설정
+        drive_speed = std::max(drive_speed, ini_load_float("control", "min_speed", 0.0f, ini_file_path_));
         float target_speed = global_raceline_waypoints_[closest_idx].vx;
 
         // Evaluation metrics 기록 (metrics가 활성화된 경우에만)
