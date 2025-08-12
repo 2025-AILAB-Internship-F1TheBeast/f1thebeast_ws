@@ -94,11 +94,11 @@ public:
     void publishMarker(float heading_deg, float cross_track_error, float cross_track_angle, float steering_deg);
 
     // Evaluation Metrics 관련 함수들
-    void initialize_metrics_csv();
-    float calculate_cross_track_error(float car_x, float car_y, size_t closest_idx);
-    float calculate_yaw_error(float car_yaw, size_t closest_idx);
-    void record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed);
-    void save_metrics_to_csv();
+    // void initialize_metrics_csv();
+    // float calculate_cross_track_error(float car_x, float car_y, size_t closest_idx);
+    // float calculate_yaw_error(float car_yaw, size_t closest_idx);
+    // void record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed);
+    // void save_metrics_to_csv();
 
     // ini 파일 관련 함수들
     float ini_load_float(const std::string& section, const std::string& key, float def, const std::string& file_path);
@@ -119,6 +119,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr target_velocity_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr car_velocity_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr cross_track_error_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr yaw_error_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr text_visualize_pub_;
     
     // 시간 관련 멤버 변수
@@ -138,7 +139,9 @@ private:
     // 이전 스티어링 각도 저장용
     float pre_steering_angle_ = 0.0f;
     float pre_pre_steering_angle_ = 0.0f;
-    float prev_base_link_yaw_ = 0.0f;
+
+    // 이전 base_link yaw 저장용
+    float prev_base_link_yaw_ = 30.0 * M_PI / 180.0; // 30도
 
     // 차 속도 관련 멤버 변수
     float publish_car_speed_ = 0.0f;  // 퍼블리시
@@ -148,15 +151,14 @@ private:
     std::vector<RacelineWaypoint> global_raceline_waypoints_;
 
     // Evaluation Metrics 관련
-    bool enable_metrics_;  // metrics 기록 여부
     std::vector<EvaluationMetrics> metrics_data_;
     std::ofstream metrics_file_;
     std::chrono::steady_clock::time_point start_time_;
 
     // Max 값 추적을 위한 멤버 변수 추가
-    float max_cross_track_error_;
-    float max_yaw_error_;
-    float max_speed_error_;
+    float cross_track_error_ = 0.0f;
+    float yaw_error_ = 0.0f;
+    // float speed_error_;
 
     // ini 파일 관련 멤버 변수
     float ini_test_;
