@@ -11,8 +11,8 @@ from skimage.measure import regionprops
 from skimage.graph import route_through_array
 import networkx as nx
 
-map_img_path = "map_1753945518.pgm"
-map_yaml_path = "map_1753945518.yaml"
+map_img_path = "map_1753950751.pgm"
+map_yaml_path = "map_1753950751.yaml"
 
 # ======== 맵 로드 및 전처리 ========
 def extract_track():

@@ -19,7 +19,7 @@ public:
         marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_waypoints_marker", 1);
 
         // raceline.csv 경로로 변경
-        std::string raceline_csv_path = "/home/yongwoo/global_racetrajectory_optimization/outputs/qp_only_path.csv";
+        std::string raceline_csv_path = "/home/yongwoo/Raceline-Optimization/outputs/Spielberg_map/traj_race_custom.csv";
         load_raceline_waypoints(raceline_csv_path);
 
         // 타이머로 주기적으로 marker publish (예: 0.5초마다)
@@ -64,10 +64,10 @@ private:
             
             // QP CSV 형식: x_m, y_m (2개 컬럼만)
             // x_m은 인덱스 0, y_m은 인덱스 1
-            if (tokens.size() >= 2) {
+            if (tokens.size() >= 6) {
                 try {
-                    float x = std::stof(tokens[0]);
-                    float y = std::stof(tokens[1]);
+                    float x = std::stof(tokens[1]);
+                    float y = std::stof(tokens[2]);
                     global_waypoints_.push_back({x, y});
                 } catch (const std::exception& e) {
                     RCLCPP_WARN(this->get_logger(), "Failed to parse line: %s", line.c_str());
