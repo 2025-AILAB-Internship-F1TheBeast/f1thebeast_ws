@@ -19,15 +19,15 @@ Control::Control(std::string ini_file_path) :
     previous_velocity_(1.0f),
     pid_previous_time_ns_(this->now()),
     lpbsc_previous_time_ns_(this->now()),
-    max_cross_track_error_(0.0f),
-    max_yaw_error_(0.0f),
-    max_speed_error_(0.0f),
+    cross_track_error_(0.0f),
+    yaw_error_(0.0f),
     ini_file_path_(ini_file_path) {
 
     // target velocity publisher 초기화
     target_velocity_pub_ = this->create_publisher<std_msgs::msg::Float32>("target_velocity", 10);
     car_velocity_pub_ = this->create_publisher<std_msgs::msg::Float32>("car_velocity", 10);
     cross_track_error_pub_ = this->create_publisher<std_msgs::msg::Float32>("cross_track_error", 10);
+    yaw_error_pub_ = this->create_publisher<std_msgs::msg::Float32>("yaw_error", 10);
 
     // publisher 초기화  
     drive_pub_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(drive_topic, 10);
@@ -39,7 +39,7 @@ Control::Control(std::string ini_file_path) :
     // 지상 : /pf/pose/odom
     // GT : /ego_racecar/odom
     initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/pf/pose/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
+        "/ego_racecar/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
     
     wall_collision_subscription_ = this->create_subscription<custom_msgs::msg::WallCollision>(
     "/wall_collision", 10, 
@@ -48,28 +48,107 @@ Control::Control(std::string ini_file_path) :
     // raceline.csv로 경로 변경 /home/jys/ROS2/f1thebeast_ws/src/control_ws/control/map/f1tenth_racetracks
     std::string raceline_csv_path = ini_load_string("paths", "raceline_csv", "", ini_file_path_);
     load_raceline_waypoints(raceline_csv_path);
-
-    // Evaluation metrics 초기화 (enable_metrics가 true일 때만)
-    bool enable_metrics_ = ini_load_bool("evaluation", "enable_metrics", 0, ini_file_path_);
-    if (enable_metrics_) {
-        initialize_metrics_csv();
-        start_time_ = std::chrono::steady_clock::now();
-
-    }
 }
 
 // complete : control_class.cpp
 Control::~Control() {
     std::cout << "Shutting down Control node..." << std::endl;
-    // CSV 파일 저장 및 닫기 (metrics가 활성화된 경우에만)
-    enable_metrics_ = ini_load_bool("evaluation", "enable_metrics", 0, ini_file_path_);
-    if (enable_metrics_) {
-        std::cout << "Saving metrics to CSV..." << std::endl;
-        save_metrics_to_csv();
-        if (metrics_file_.is_open()) {
-            metrics_file_.close();
+}
+
+// Pure Pursuit 컨트롤러 수정 및 완성
+float Control::pure_pursuit_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints) {
+    publish_car_speed_ = car_speed;  // 퍼블리시할 차량 속도
+    
+    // waypoints가 충분한지 확인
+    if (waypoints.size() < 2) {
+        RCLCPP_ERROR(this->get_logger(), "Not enough waypoints for Pure Pursuit: %zu", waypoints.size());
+        return 0.0f;
+    }
+
+    // Pure Pursuit 파라미터 로드
+    float lookahead_distance = ini_load_float("pure-pursuit", "lookahead_distance", 1.0f, ini_file_path_);
+    const float wheelbase = ini_load_float("vehicle", "wheelbase", 0.32f, ini_file_path_);
+    publish_lookahead_distance_ = lookahead_distance;  // 퍼블리시할 lookahead distance
+
+    // local waypoint의 좌표를 global 좌표계에서 local 좌표계(base_link 기준)로 변환
+    std::vector<LocalWaypoint> local_waypoints = global_to_local(base_link_x, base_link_y, base_link_yaw, waypoints);
+
+    // Lookahead point 찾기
+    float best_distance = std::numeric_limits<float>::max();
+    size_t target_idx = 0;
+    float target_x = 0.0f, target_y = 0.0f;
+    bool found_target = false;
+
+    // 먼저 lookahead distance와 가장 가까운 거리에 있는 점을 찾기
+    for (size_t i = 0; i < local_waypoints.size(); i++) {
+        float distance = std::sqrt(local_waypoints[i].x * local_waypoints[i].x + 
+                                 local_waypoints[i].y * local_waypoints[i].y);
+        
+        // lookahead distance보다 크거나 같고, 차량 앞쪽에 있는 점 중에서 가장 가까운 점
+        if (distance >= lookahead_distance && local_waypoints[i].x > 0) {
+            if (std::abs(distance - lookahead_distance) < best_distance) {
+                best_distance = std::abs(distance - lookahead_distance);
+                target_idx = i;
+                target_x = local_waypoints[i].x;
+                target_y = local_waypoints[i].y;
+                found_target = true;
+            }
         }
     }
+
+    // 적절한 target이 없으면 가장 먼 앞쪽 점 사용
+    if (!found_target) {
+        float max_x = -std::numeric_limits<float>::max();
+        for (size_t i = 0; i < local_waypoints.size(); i++) {
+            if (local_waypoints[i].x > max_x) {
+                max_x = local_waypoints[i].x;
+                target_idx = i;
+                target_x = local_waypoints[i].x;
+                target_y = local_waypoints[i].y;
+                found_target = true;
+            }
+        }
+    }
+
+    if (!found_target) {
+        RCLCPP_WARN(this->get_logger(), "No valid target point found for Pure Pursuit");
+        return 0.0f;
+    }
+
+    // Target point 시각화
+    std::vector<RacelineWaypoint> target_waypoints;
+    RacelineWaypoint target_wp;
+    target_wp.x = target_x;
+    target_wp.y = target_y;
+    target_wp.psi = 0.0f;
+    target_waypoints.push_back(target_wp);
+    publish_closest_waypoints_marker(target_waypoints, 1.0f, 0.0f, 0.0f, "ego_racecar/base_link");  // 빨간색으로 표시
+
+    // Pure Pursuit 알고리즘
+    float lookahead_angle = std::atan2(target_y, target_x);
+    float lookahead_dist = std::sqrt(target_x * target_x + target_y * target_y);
+    
+    // Steering angle 계산
+    float steering_angle = std::atan2(2.0f * wheelbase * std::sin(lookahead_angle), lookahead_dist);
+
+    // Cross track error 계산 (디버깅용)
+    float cross_track_error = point_to_line_distance_with_heading(
+        local_waypoints[target_idx].x, local_waypoints[target_idx].y, 
+        local_waypoints[target_idx].heading, 0.0f, 0.0f);
+    
+    cross_track_error_ = cross_track_error;  // cross_track_error 저장
+
+    // 부호 결정
+    if (target_y < 0) {
+        cross_track_error *= -1.0f;
+    }
+    
+    yaw_error_ = PI2PI(local_waypoints[target_idx].heading) * 180.0 / M_PI;  // 헤딩 에러를 degree로 변환
+
+    // 디버그 정보 출력
+    publishMarker(0.0f, cross_track_error, lookahead_angle, steering_angle);
+
+    return steering_angle;
 }
 
 // conplete : control_lateral_controller.cpp
@@ -90,8 +169,14 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
     // std::cout << "=====================================================================================" <<  std::endl;
     // Hyperparameter for stanley controller
     publish_car_speed_ = car_speed;  // 퍼블리시할 차량 속도
-    const float stanley_gain = ini_load_float("control", "stanley_gain", 0, ini_file_path_);
-    const float soft_gain = ini_load_float("control", "soft_gain", 0, ini_file_path_);
+
+    float dt = (this->now() - pid_previous_time_ns_).seconds();
+    pid_previous_time_ns_ = this->now();
+
+    const float stanley_gain = ini_load_float("basic-stanley", "stanley_gain", 0, ini_file_path_);
+    const float soft_gain = ini_load_float("basic-stanley", "soft_gain", 0, ini_file_path_);
+    const float heading_error_gain = ini_load_float("basic-stanley", "heading_error_gain", 0, ini_file_path_);
+    const float cte_pow = ini_load_float("basic-stanley", "cte_pow", 0, ini_file_path_);
 
     // local waypoint의 좌표를 global 좌표계에서 local 좌표계(base_link 기준)로 변환
     std::vector<LocalWaypoint> local_waypoints = global_to_local(base_link_x, base_link_y, base_link_yaw, waypoints);
@@ -104,7 +189,47 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
 
     // local 좌표계 기준 차량의 앞축의 위치와 waypoints 사이의 거리를 계산하고 거리가 가장 가까운 waypoint 2개의 인덱스 찾기
     float wheelbase = ini_load_float("vehicle", "wheelbase", 0, ini_file_path_);
-    float lookahead_dist = ini_load_float("control", "lookahead_distance", 0, ini_file_path_);
+    float base_lookahead_dist = ini_load_float("basic-stanley", "lookahead_distance", 0, ini_file_path_);
+
+    // 곡률 기반 lookahead distance 조정 파라미터
+    float min_lookahead_dist = ini_load_float("basic-stanley", "min_lookahead_distance", 0, ini_file_path_);
+    float max_lookahead_dist = ini_load_float("basic-stanley", "max_lookahead_distance", 0, ini_file_path_);
+    float curvature_threshold = ini_load_float("basic-stanley", "curvature_threshold", 0, ini_file_path_);
+    bool use_curvature_adaptation = ini_load_bool("basic-stanley", "use_curvature_adaptation", 0, ini_file_path_);
+
+    float lookahead_dist = base_lookahead_dist;
+
+    // waypoint의 곡률을 기반으로 lookahead distance 조정
+    if (use_curvature_adaptation && waypoints.size() > 0) {
+        // 현재 waypoint의 곡률 값 사용
+        float current_kappa = std::abs(waypoints[0].kappa);  // 곡률의 절댓값 사용
+        
+        // 곡률이 클수록 lookahead distance를 더 작게 조정
+        // 곡률이 작을수록 lookahead distance를 더 크게 조정
+        if (current_kappa > curvature_threshold) {
+            // 높은 곡률 영역: 짧은 lookahead distance
+            float curvature_factor = std::min(current_kappa / curvature_threshold, 3.0f);  // 최대 3배까지 조정
+            lookahead_dist = std::max(min_lookahead_dist, base_lookahead_dist / curvature_factor);
+        } else {
+            // 낮은 곡률 영역: 긴 lookahead distance
+            float straight_factor = curvature_threshold / std::max(current_kappa, 0.01f);  // 0으로 나누기 방지
+            straight_factor = std::min(straight_factor, 3.0f);  // 최대 3배까지 조정
+            lookahead_dist = std::min(max_lookahead_dist, base_lookahead_dist * straight_factor);
+        }
+        
+        // // 속도에 따른 추가 조정 (선택사항)
+        // bool use_speed_adaptation = ini_load_bool("basic-stanley", "use_speed_adaptation", false, ini_file_path_);
+        // if (use_speed_adaptation) {
+        //     float speed_factor = std::max(0.5f, std::min(2.0f, car_speed / 3.0f));  // 3m/s 기준으로 조정
+        //     lookahead_dist *= speed_factor;
+        //     lookahead_dist = std::max(min_lookahead_dist, std::min(max_lookahead_dist, lookahead_dist));
+        // }
+        
+        // 디버그 출력
+        std::cout << "Curvature: " << current_kappa << ", Adjusted lookahead: " << lookahead_dist 
+                  << " (base: " << base_lookahead_dist << ")" << std::endl;
+    }
+
     float front_axle_x = 0.0f + wheelbase + lookahead_dist;
     float front_axle_y = 0.0f;
     publish_lookahead_distance_ = lookahead_dist;  // 퍼블리시할 lookahead distance
@@ -172,10 +297,10 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
     // Option 2 : 차량 앞축과 가장 가까운 점 1개로 cte 계산
     float cross_track_error = point_to_line_distance_with_heading(local_waypoints[first_idx].x, local_waypoints[first_idx].y, local_waypoints[first_idx].heading, front_axle_x, front_axle_y);
     float original_cross_track_error = cross_track_error;  // 원래의 cross_track_error 저장
+    cross_track_error_ = original_cross_track_error;  // cross_track_error 저장
 
     // cross_track_error의 스케일 결정
     // cross_track_error에 제곱승을 적용
-    float cte_pow = ini_load_float("control", "cte_pow", 0, ini_file_path_);
     cross_track_error = std::pow(cross_track_error, cte_pow);
 
     // cross_track_error의 부호 결정
@@ -188,24 +313,51 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
     // std::cout << "dx: " << dx << ", dy: " << dy << ", slope: " << slope << ", cross_track_error: " << cross_track_error << std::endl;
 
     // 헤딩 에러 계산
-    float heading_error_gain = ini_load_float("control", "heading_error_gain", 0, ini_file_path_);
-    float heading_error = heading_error_gain * local_waypoints[first_idx].heading;;
+    yaw_error_  = PI2PI(local_waypoints[first_idx].heading) * 180.0 / M_PI;  // 헤딩 에러를 degree로 변환
+    float heading_error = heading_error_gain * local_waypoints[first_idx].heading;
 
     heading_error = PI2PI(heading_error);  // -pi ~ pi 범위로 변환
 
     // 스티어링 각도 계산
     float cross_track_angle = std::atan2(stanley_gain * cross_track_error, car_speed + soft_gain);
-    float steering_angle = heading_error + cross_track_angle;
+
+    // 차량의 yaw rate을 보상해줌.
+    float k_yaw = ini_load_float("adaptive-stanley", "k_yaw", 0, ini_file_path_);
+    float steer_add = -k_yaw * (base_link_yaw - prev_base_link_yaw_) / dt;
+    std::cout << "steer_add: " << steer_add * 180 / M_PI << " degrees" << std::endl;
+
+    // curvature based steering angle 계산
+    // kappa가 0이 아닌 경우에만 계산 
+    float kappa = local_waypoints[0].kappa;  // 곡률
+    float m = ini_load_float("adaptive-stanley", "mass", 0, ini_file_path_);
+    float C_sr = ini_load_float("adaptive-stanley", "C_sr", 0, ini_file_path_);
+    float a = ini_load_float("adaptive-stanley", "lf", 0, ini_file_path_);
+    float b = ini_load_float("adaptive-stanley", "lr", 0, ini_file_path_);
+
+    float csi_dot = car_speed * kappa;
+    float delta_ssr = m/(C_sr*(1+b/a)) * car_speed * csi_dot;
+
+    float nominator = std::abs(wheelbase * kappa) - std::abs(std::sin(delta_ssr));
+    float denominator = std::cos(delta_ssr);
+    float steer_kappa = std::atan2(nominator, denominator);
+
+
+    std::cout << "kappa: " << kappa << std::endl;
+    std::cout << "csi_dot: " << csi_dot << std::endl;
+    std::cout << "delta_ssr: " << delta_ssr * 180 / M_PI << std::endl;
+    std::cout << "nominator: " << nominator << std::endl;
+    std::cout << "denominator: " << denominator << std::endl;
+    std::cout << "steer_kappa: " << steer_kappa * 180 / M_PI << " degrees" << std::endl;
+    float k_steer = ini_load_float("adaptive-stanley", "k_steer", 0, ini_file_path_);
+
+    float steering_angle = heading_error + cross_track_angle + steer_add + k_steer * steer_kappa;
     // std::cout << "After heading_error : " << heading_error * 180 / M_PI << " degrees" << std::endl;
     // std::cout << "cross track angle : " << cross_track_angle * 180 / M_PI << " degrees" << std::endl;
     // std::cout << "steering_angle: " << steering_angle * 180 / M_PI << " degrees" << std::endl;
 
     publishMarker(heading_error, original_cross_track_error, cross_track_angle, steering_angle);
 
-    // cross track error publish
-    std_msgs::msg::Float32 cross_track_error_msg;
-    cross_track_error_msg.data = original_cross_track_error;
-    cross_track_error_pub_->publish(cross_track_error_msg);
+    prev_base_link_yaw_ = base_link_yaw;  // 이전 base_link_yaw 업데이트
 
     return steering_angle;
 }
@@ -214,8 +366,8 @@ float Control::adaptive_stanley_controller(float base_link_x, float base_link_y,
     // std::cout << "=====================================================================================" <<  std::endl;
     // Hyperparameter for stanley controller
     publish_car_speed_ = car_speed;  // 퍼블리시할 차량 속도
-    const float stanley_gain = ini_load_float("control", "stanley_gain", 0, ini_file_path_);
-    const float soft_gain = ini_load_float("control", "soft_gain", 0, ini_file_path_);
+    const float stanley_gain = ini_load_float("adaptive-stanley", "stanley_gain", 0, ini_file_path_);
+    const float soft_gain = ini_load_float("adaptive-stanley", "soft_gain", 0, ini_file_path_);
 
     // local waypoint의 좌표를 global 좌표계에서 local 좌표계(base_link 기준)로 변환
     std::vector<LocalWaypoint> local_waypoints = global_to_local(base_link_x, base_link_y, base_link_yaw, waypoints);
@@ -228,8 +380,8 @@ float Control::adaptive_stanley_controller(float base_link_x, float base_link_y,
 
     // local 좌표계 기준 차량의 앞축의 위치와 waypoints 사이의 거리를 계산하고 거리가 가장 가까운 waypoint 2개의 인덱스 찾기
     const float wheelbase = ini_load_float("vehicle", "wheelbase", 0, ini_file_path_);
-    float lookahead_dist = ini_load_float("control", "lookahead_distance", 0, ini_file_path_);
-    float front_axle_x = 0.0f + wheelbase;
+    float lookahead_dist = 0.0;
+    float front_axle_x = 0.0f + wheelbase + lookahead_dist;
     float front_axle_y = 0.0f;
 
     float min_dist = std::numeric_limits<float>::max();
@@ -262,14 +414,16 @@ float Control::adaptive_stanley_controller(float base_link_x, float base_link_y,
 
     float cross_track_error = point_to_line_distance_with_heading(local_waypoints[first_idx].x, local_waypoints[first_idx].y, local_waypoints[first_idx].heading, front_axle_x, front_axle_y);
     float original_cross_track_error = cross_track_error;  // 원래의 cross_track_error 저장
+    float long_lookahead_dist = ini_load_float("adaptive-stanley", "long_lookahead_distance", 0, ini_file_path_);
+    float short_lookahead_dist = ini_load_float("adaptive-stanley", "short_lookahead_distance", 0, ini_file_path_);
 
     // cross_track_error의 부호 결정
     // 가장 가까운 local waypoint 2개의 y의 평균이 0보다 크면 cross_track_error는 양수
     if ((local_waypoints[first_idx].y + local_waypoints[second_idx].y)/2 * local_waypoints[first_idx].kappa > 0) {
-        lookahead_dist = 0.5;
+        lookahead_dist = long_lookahead_dist;  // 오른쪽에 있으면 긴 lookahead distance
     }
     else {
-        lookahead_dist = 0.1;
+        lookahead_dist = short_lookahead_dist;  // 왼쪽에 있으면 짧은 lookahead distance
     }
     
     front_axle_x = 0.0f + wheelbase + lookahead_dist;
@@ -294,10 +448,11 @@ float Control::adaptive_stanley_controller(float base_link_x, float base_link_y,
 
     cross_track_error = point_to_line_distance_with_heading(local_waypoints[first_idx].x, local_waypoints[first_idx].y, local_waypoints[first_idx].heading, front_axle_x, front_axle_y);
     original_cross_track_error = cross_track_error;  // 원래의 cross_track_error 저장
+    cross_track_error_ = original_cross_track_error;  // cross_track_error 저장
 
     // cross_track_error의 스케일 결정
     // cross_track_error에 제곱승을 적용
-    float cte_pow = ini_load_float("control", "cte_pow", 0, ini_file_path_);
+    float cte_pow = ini_load_float("adaptive-stanley", "cte_pow", 0, ini_file_path_);
     cross_track_error = std::pow(cross_track_error, cte_pow);
 
     // cross_track_error의 부호 결정
@@ -310,7 +465,10 @@ float Control::adaptive_stanley_controller(float base_link_x, float base_link_y,
     // std::cout << "dx: " << dx << ", dy: " << dy << ", slope: " << slope << ", cross_track_error: " << cross_track_error << std::endl;
 
     // 헤딩 에러 계산
-    float heading_error_gain = ini_load_float("control", "heading_error_gain", 0, ini_file_path_);
+    yaw_error_ = PI2PI(local_waypoints[first_idx].heading) * 180.0 / M_PI;  // 헤딩 에러를 degree로 변환
+    float heading_error_gain = ini_load_float("adaptive-stanley", "heading_error_gain", 0, ini_file_path_);
+    // std::cout << "heading_error_gain: " << heading_error_gain << std::endl;
+    // std::cout << "local_waypoints[first_idx].heading: " << local_waypoints[first_idx].heading << std::endl;
     float heading_error = heading_error_gain * local_waypoints[first_idx].heading;;
 
     heading_error = PI2PI(heading_error);  // -pi ~ pi 범위로 변환
@@ -323,10 +481,6 @@ float Control::adaptive_stanley_controller(float base_link_x, float base_link_y,
     // std::cout << "steering_angle: " << steering_angle * 180 / M_PI << " degrees" << std::endl;
 
     publishMarker(heading_error, original_cross_track_error, cross_track_angle, steering_angle);
-    // cross track error publish
-    std_msgs::msg::Float32 cross_track_error_msg;
-    cross_track_error_msg.data = original_cross_track_error;
-    cross_track_error_pub_->publish(cross_track_error_msg);
 
     return steering_angle;
 
@@ -353,17 +507,14 @@ float Control::point_to_line_distance_with_heading(float line_x, float line_y, f
 std::pair<float, float> Control::vehicle_control(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints) {
 
     // raceline의 속도 값을 목표 속도로 사용
-    // float target_speed = waypoints[3].vx;
-    // float target_speed = ini_load_float("control", "target_velocity", 0, ini_file_path_);
     float speed_scale = ini_load_float("control", "speed_scale", 1.0f, ini_file_path_);
-    float target_speed = speed_scale * waypoints[0].vx;  // raceline의 속도 값을 목표 속도로 사용
+    // float target_speed = speed_scale * ini_load_float("control", "target_velocity", 0, ini_file_path_);
     float drive_speed = speed_scale * waypoints[0].vx;  // raceline의 속도 값을 목표 속도로 사용
-    // std::cout << "current_closest_idx_: " << current_closest_idx_ << std::endl;
-    // std::cout << "target_speed: " << target_speed << ", drive_speed: " << drive_speed << std::endl;
+    float target_speed = drive_speed;  // 속도 스케일링 적용
 
     // stanley controller 호출해서 스티어링 각도 계산
     float steering_angle = 0.0f;
-    bool adaptive_stanley = ini_load_bool("control", "adaptive_stanley", 0, ini_file_path_);
+    bool adaptive_stanley = ini_load_bool("adaptive-stanley", "adaptive_stanley", 0, ini_file_path_);
     if (adaptive_stanley) {
         // Adaptive Stanley Controller 사용
         RCLCPP_INFO(this->get_logger(), "Using Adaptive Stanley Controller");
@@ -375,6 +526,8 @@ std::pair<float, float> Control::vehicle_control(float base_link_x, float base_l
         steering_angle = stanley_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
     }
 
+    // steering_angle = pure_pursuit_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
+
     // target_speed와 car_speed를 퍼블리시
     std_msgs::msg::Float32 target_velocity_msg;
     target_velocity_msg.data = target_speed;
@@ -383,6 +536,14 @@ std::pair<float, float> Control::vehicle_control(float base_link_x, float base_l
     std_msgs::msg::Float32 car_velocity_msg;
     car_velocity_msg.data = car_speed;
     car_velocity_pub_->publish(car_velocity_msg);
+
+    std_msgs::msg::Float32 cte_msg;
+    cte_msg.data = cross_track_error_;
+    cross_track_error_pub_->publish(cte_msg);
+
+    std_msgs::msg::Float32 yaw_error_msg;
+    yaw_error_msg.data = yaw_error_;
+    yaw_error_pub_->publish(yaw_error_msg);
 
     return std::make_pair(steering_angle, drive_speed);
 }
@@ -393,9 +554,9 @@ float Control::pid_controller(float target_speed, float current_speed) {
     float dt = (this->now() - pid_previous_time_ns_).seconds();
     pid_previous_time_ns_ = this->now();
 
-    const float Kp = ini_load_float("control", "pid_kp", 0, ini_file_path_);
-    const float Ki = ini_load_float("control", "pid_ki", 0, ini_file_path_);
-    const float Kd = ini_load_float("control", "pid_kd", 0, ini_file_path_);
+    const float Kp = ini_load_float("pid", "pid_kp", 0, ini_file_path_);
+    const float Ki = ini_load_float("pid", "pid_ki", 0, ini_file_path_);
+    const float Kd = ini_load_float("pid", "pid_kd", 0, ini_file_path_);
 
     float error = target_speed - current_speed;
 
@@ -448,7 +609,7 @@ void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPt
         // 초기 odometry 구독 해제하고 일반 odometry 구독 시작
         initial_odom_subscription_.reset();
         odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/pf/pose/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
+            "/ego_racecar/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
 
     } catch (const std::exception &e) {
         RCLCPP_ERROR(this->get_logger(), "Error during initial_odom_callback: %s", e.what());
@@ -537,23 +698,21 @@ void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_m
 
         // steering angle과 drive speed 계산
         auto [steering_angle, drive_speed] = vehicle_control(base_link_x, base_link_y, base_link_yaw, car_current_speed, lookahead_waypoints);
-
+        
+        // 최소 속도 설정
+        drive_speed = std::max(drive_speed, ini_load_float("control", "min_speed", 0.0f, ini_file_path_));
         float target_speed = global_raceline_waypoints_[closest_idx].vx;
-
-        // Evaluation metrics 기록 (metrics가 활성화된 경우에만)
-        enable_metrics_ = ini_load_bool("evaluation", "enable_metrics", 0, ini_file_path_);
-        if (enable_metrics_) {
-            std::cout << "Recording metrics..." << std::endl;
-            record_metrics(front_axle_x, front_axle_y, front_axle_yaw, car_current_speed, closest_idx, target_speed);
-        }
 
         auto drive_msg = ackermann_msgs::msg::AckermannDriveStamped();
         drive_msg.drive.steering_angle = steering_angle;
         drive_msg.drive.speed = drive_speed;
 
+        std::cout << "drive_speed : " << drive_speed << ", target_speed: " << target_speed << std::endl;
+
         float control_mode = ini_load_float("control", "control_mode", 0, ini_file_path_);
+        std::cout << "control_mode: " << control_mode << std::endl;
         if (control_mode == 1.0) {  // Drive mode 0 : Manual control, 1 : Auto control
-            // std::cout << "Publishing drive message with steering angle: " << steering_angle * 180 / M_PI << " degrees, speed: " << drive_speed << std::endl;
+            std::cout << "Publishing drive message with steering angle: " << steering_angle * 180 / M_PI << " degrees, speed: " << drive_speed << std::endl;
             drive_pub_->publish(drive_msg);
         }
     }
@@ -703,179 +862,6 @@ std::vector<LocalWaypoint> Control::global_to_local(float car_x, float car_y, fl
         local_points.emplace_back(local_x, local_y, local_heading, kappa);
     }
     return local_points;
-}
-
-// complete : control_metrics.cpp
-void Control::initialize_metrics_csv() {
-    // evaluation_metrics 폴더 생성
-    std::string metrics_dir = ini_load_string("paths", "metrics_output_dir", "", ini_file_path_);
-    std::filesystem::create_directories(metrics_dir);
-
-    // 현재 시간으로 파일명 생성
-    auto now = std::chrono::system_clock::now();
-    auto time_t = std::chrono::system_clock::to_time_t(now);
-    auto tm = *std::localtime(&time_t);
-    
-    std::stringstream filename;
-    float stanley_gain = ini_load_float("control", "stanley_gain", 0, ini_file_path_);
-    float soft_gain = ini_load_float("control", "soft_gain", 0, ini_file_path_);
-    filename << metrics_dir << "/" << stanley_gain << "_" << soft_gain << "_" << std::put_time(&tm, "%Y%m%d_%H%M%S") << ".csv";
-
-    metrics_file_.open(filename.str());
-    if (metrics_file_.is_open()) {
-    metrics_file_ << "timestamp,"
-                  << "cross_track_error,"
-                  << "yaw_error,"
-                  << "speed_error,"
-                  << "max_cross_track_error,"
-                  << "max_yaw_error,"
-                  << "max_speed_error,"
-                  << "current_x,"
-                  << "current_y,"
-                  << "current_yaw,"
-                  << "current_speed,"
-                  << "target_speed,"
-                  << "closest_waypoint_idx\n";
-    }
-    else {
-        RCLCPP_ERROR(this->get_logger(), "Failed to create metrics CSV file");
-    }
-}
-
-float Control::calculate_cross_track_error(float car_x, float car_y, size_t closest_idx) {
-    if (closest_idx >= global_raceline_waypoints_.size()) {
-        return 0.0f;
-    }
-
-    // 현재 waypoint의 정보 사용
-    float waypoint_x = global_raceline_waypoints_[closest_idx].x;
-    float waypoint_y = global_raceline_waypoints_[closest_idx].y;
-    float waypoint_heading = global_raceline_waypoints_[closest_idx].psi;
-
-    // heading을 이용한 점과 직선 사이의 거리 계산
-    float cross_track_error = point_to_line_distance_with_heading(waypoint_x, waypoint_y, waypoint_heading, car_x, car_y);
-    
-    // 부호 결정을 위해 차량이 waypoint 기준으로 어느 쪽에 있는지 판단
-    // waypoint에서 차량으로의 벡터
-    float to_car_x = car_x - waypoint_x;
-    float to_car_y = car_y - waypoint_y;
-    
-    // waypoint heading에 수직인 벡터 (왼쪽 방향)
-    float perpendicular_x = -std::sin(waypoint_heading);
-    float perpendicular_y = std::cos(waypoint_heading);
-    
-    // 내적으로 부호 결정 (양수: 왼쪽, 음수: 오른쪽)
-    float dot_product = to_car_x * perpendicular_x + to_car_y * perpendicular_y;
-    
-    if (dot_product < 0) {
-        cross_track_error *= -1.0f;  // 오른쪽에 있으면 음수
-    }
-    
-    return cross_track_error;
-}
-
-float Control::calculate_yaw_error(float car_yaw, size_t closest_idx) {
-    if (closest_idx >= global_raceline_waypoints_.size()) {
-        return 0.0f;
-    }
-
-    float target_yaw = global_raceline_waypoints_[closest_idx].psi;
-    float yaw_error = car_yaw - target_yaw;
-
-    // Yaw error를 [-π, π] 범위로 정규화
-    while (yaw_error > PI) yaw_error -= 2 * PI;
-    while (yaw_error < -PI) yaw_error += 2 * PI;
-
-    return yaw_error;
-}
-
-// pose_callback에서 호출되는 메트릭 기록 함수
-// 차량의 현재 위치, 자세와 가장 가까운 waypoint 인덱스를 기록
-// 속도는 없음
-
-void Control::record_metrics(float car_x, float car_y, float car_yaw, float car_speed, size_t closest_idx, float target_speed) {
-    // 현재 시간 계산 (시작 시간으로부터의 경과 시간)
-    
-    auto current_time = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time_);
-    double elapsed_seconds = elapsed.count() / 1000.0; // 초 단위
-    
-    EvaluationMetrics metrics;
-    metrics.timestamp = elapsed_seconds; // 초 단위
-
-    // 에러 계산
-    metrics.cross_track_error = calculate_cross_track_error(car_x, car_y, closest_idx);
-    metrics.yaw_error = calculate_yaw_error(car_yaw, closest_idx) * 180.0 / PI; // 라디안에서 도 단위로 변환
-    metrics.speed_error = std::abs(car_speed - target_speed);
-
-    // Max 값 업데이트
-    max_cross_track_error_ = std::max(max_cross_track_error_, std::abs(metrics.cross_track_error));
-    max_yaw_error_ = std::max(max_yaw_error_, std::abs(metrics.yaw_error));
-    max_speed_error_ = std::max(max_speed_error_, metrics.speed_error);
-
-    // 현재 상태 저장
-    metrics.current_x = car_x;
-    metrics.current_y = car_y;
-    metrics.current_yaw = car_yaw;
-    metrics.closest_waypoint_idx = closest_idx;
-
-    // 메모리에 저장
-    metrics_data_.push_back(metrics);
-
-    // === 파일 출력: 헤더 순서와 정확히 일치, 포맷 고정 ===
-    if (metrics_file_.is_open()) {
-        metrics_file_ << std::fixed << std::setprecision(3)
-                      << metrics.timestamp << ","
-                      << metrics.cross_track_error << ","
-                      << metrics.yaw_error << ","
-                      << metrics.speed_error << ","
-                      << max_cross_track_error_ << ","
-                      << max_yaw_error_ << ","
-                      << max_speed_error_ << ","
-                      << car_x << ","
-                      << car_y << ","
-                      << car_yaw << ","
-                      << car_speed << ","
-                      << target_speed << ","
-                      << closest_idx << "\n";
-        // 매번 flush는 I/O 비용이 큼. 필요 시 주기적으로만 flush 권장
-        // metrics_file_.flush();
-    }
-
-    // 로그 출력 (max 값 포함)
-    RCLCPP_DEBUG(this->get_logger(),
-        "Metrics - CTE: %.3f (Max: %.3f), YE: %.3fdeg (Max: %.3fdeg), SE: %.3f (Max: %.3f)",
-        metrics.cross_track_error, max_cross_track_error_,
-        metrics.yaw_error,        max_yaw_error_,
-        metrics.speed_error,      max_speed_error_);
-}
-
-void Control::save_metrics_to_csv() {
-    if (!metrics_data_.empty()) {
-        // 통계 계산
-        float avg_cte = 0.0f, avg_ye = 0.0f, avg_se = 0.0f;
-        float rms_cte = 0.0f, rms_ye = 0.0f, rms_se = 0.0f;
-
-        for (const auto& metrics : metrics_data_) {
-            avg_cte += std::abs(metrics.cross_track_error);
-            avg_ye += std::abs(metrics.yaw_error);
-
-            rms_cte += metrics.cross_track_error * metrics.cross_track_error;
-            rms_ye += metrics.yaw_error * metrics.yaw_error;
-        }
-
-        size_t n = metrics_data_.size();
-        avg_cte /= n; avg_ye /= n; avg_se /= n;
-        rms_cte = std::sqrt(rms_cte / n);
-        rms_ye = std::sqrt(rms_ye / n);
-        rms_se = std::sqrt(rms_se / n);
-
-        // 통계 출력 (최종 max 값 사용)
-        RCLCPP_INFO(this->get_logger(), "=== Evaluation Metrics Summary ===");
-        RCLCPP_INFO(this->get_logger(), "Cross Track Error - Avg: %.3f, Max: %.3f, RMS: %.3f", avg_cte, max_cross_track_error_, rms_cte);
-        RCLCPP_INFO(this->get_logger(), "Yaw Error - Avg: %.3f, Max: %.3f, RMS: %.3f", avg_ye, max_yaw_error_, rms_ye);
-        RCLCPP_INFO(this->get_logger(), "Total data points: %zu", n);
-    }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////
