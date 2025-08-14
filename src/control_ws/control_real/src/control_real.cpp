@@ -1,4 +1,4 @@
-#include "control_sim.hpp"
+#include "control_real.hpp"
 #include <filesystem>
 
 float PI2PI(float angle) {
@@ -11,7 +11,7 @@ float PI2PI(float angle) {
 // complete : control_class.cpp
 Control::Control(std::string ini_file_path) : 
     Node("controller_node"),
-    odom_topic("/odom"),
+    odom_topic_("/odom"),
     drive_topic("/drive"), 
     pid_integral_(0.0f),
     pid_prev_error_(0.0f),
@@ -23,6 +23,26 @@ Control::Control(std::string ini_file_path) :
     yaw_error_(0.0f),
     ini_file_path_(ini_file_path) {
 
+    // 파라미터 선언
+    this->declare_parameter<bool>("use_gt_odom", true);
+    this->declare_parameter<bool>("use_pf_odom", false);
+
+    // ② 파라미터 읽기
+    const bool use_gt = this->get_parameter("use_gt_odom").as_bool();
+    const bool use_pf = this->get_parameter("use_pf_odom").as_bool();
+
+    // ③ 우선순위: GT > PF > 직접지정
+    if (use_gt && use_pf) {
+        RCLCPP_WARN(this->get_logger(), "Both use_gt_odom and use_pf_odom are true; using GT odom.");
+    }
+    if (use_gt) {
+        odom_topic_ = "/ego_racecar/odom";
+    } else if (use_pf) {
+        odom_topic_ = "/pf/pose/odom";
+    }
+
+    std::string local_path_sub_topic_ = "/chosen_path_yunsang";
+
     // target velocity publisher 초기화
     target_velocity_pub_ = this->create_publisher<std_msgs::msg::Float32>("target_velocity", 10);
     car_velocity_pub_ = this->create_publisher<std_msgs::msg::Float32>("car_velocity", 10);
@@ -31,28 +51,150 @@ Control::Control(std::string ini_file_path) :
 
     // publisher 초기화  
     drive_pub_ = this->create_publisher<ackermann_msgs::msg::AckermannDriveStamped>(drive_topic, 10);
-    lookahead_waypoints_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("lookahead_waypoints_marker", 1);
-    closest_waypoints_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("closest_waypoints_marker", 1);
     text_visualize_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("text_visualize_marker", 1);
 
     // subscriber 초기화
-    // 지상 : /pf/pose/odom
-    // GT : /ego_racecar/odom
-    initial_odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/ego_racecar/odom", 10, std::bind(&Control::initial_odom_callback, this, std::placeholders::_1));
+    odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        odom_topic_, 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
     
-    wall_collision_subscription_ = this->create_subscription<custom_msgs::msg::WallCollision>(
-    "/wall_collision", 10, 
-    std::bind(&Control::wall_collision_callback, this, std::placeholders::_1));
+    // local path subscriber 초기화
+    local_path_subscription_ = this->create_subscription<custom_msgs::msg::PathPointArray>(
+        local_path_sub_topic_, 10, std::bind(&Control::local_path_callback, this, std::placeholders::_1));
 
-    // raceline.csv로 경로 변경 /home/jys/ROS2/f1thebeast_ws/src/control_ws/control/map/f1tenth_racetracks
-    std::string raceline_csv_path = ini_load_string("paths", "raceline_csv", "", ini_file_path_);
-    load_raceline_waypoints(raceline_csv_path);
+    // 제어 타이머 초기화 (예: 50Hz)
+    double control_frequency = ini_load_float("control", "control_frequency", 50.0, ini_file_path_);
+    auto timer_period = std::chrono::duration<double>(1.0 / control_frequency);
+    control_timer_ = this->create_wall_timer(
+        timer_period, std::bind(&Control::control_timer_callback, this));
+
+    RCLCPP_INFO(this->get_logger(), "Control timer initialized with frequency: %.1f Hz", control_frequency);
 }
 
 // complete : control_class.cpp
 Control::~Control() {
     std::cout << "Shutting down Control node..." << std::endl;
+}
+
+void Control::local_path_callback(const custom_msgs::msg::PathPointArray::SharedPtr path_msg) {
+    std::lock_guard<std::mutex> lock(local_path_mutex_);
+    
+    // 로컬 패스를 RacelineWaypoint 형태로 변환하여 저장
+    current_local_path_.clear();
+    
+    for (const auto& point : path_msg->points) {
+        RacelineWaypoint wp;
+        wp.x = point.x;
+        wp.y = point.y;
+        wp.psi = point.yaw;
+        wp.vx = point.v;
+        current_local_path_.push_back(wp);
+    }
+    
+    local_path_valid_ = !current_local_path_.empty();
+    
+    RCLCPP_DEBUG(this->get_logger(), "Local path updated with %zu waypoints", current_local_path_.size());
+}
+
+void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg) {
+    std::lock_guard<std::mutex> lock(vehicle_state_mutex_);
+    
+    // 차량 상태 업데이트
+    current_vehicle_state_.x = odom_msg->pose.pose.position.x;
+    current_vehicle_state_.y = odom_msg->pose.pose.position.y;
+    current_vehicle_state_.yaw = tf2::getYaw(odom_msg->pose.pose.orientation);
+    current_vehicle_state_.speed = std::sqrt(
+        odom_msg->twist.twist.linear.x * odom_msg->twist.twist.linear.x +
+        odom_msg->twist.twist.linear.y * odom_msg->twist.twist.linear.y);
+    current_vehicle_state_.timestamp = this->now();
+    current_vehicle_state_.valid = true;
+    
+    RCLCPP_DEBUG(this->get_logger(), "Vehicle state updated: x=%.2f, y=%.2f, yaw=%.2f, speed=%.2f", 
+                 current_vehicle_state_.x, current_vehicle_state_.y, 
+                 current_vehicle_state_.yaw, current_vehicle_state_.speed);
+}
+
+void Control::control_timer_callback() {
+    try {
+        // 차량 상태와 로컬 패스를 복사 (뮤텍스 보호)
+        VehicleState vehicle_state;
+        std::vector<RacelineWaypoint> local_path;
+        bool path_valid = false;
+        
+        {
+            std::lock_guard<std::mutex> state_lock(vehicle_state_mutex_);
+            vehicle_state = current_vehicle_state_;
+        }
+        
+        {
+            std::lock_guard<std::mutex> path_lock(local_path_mutex_);
+            local_path = current_local_path_;
+            path_valid = local_path_valid_;
+        }
+        
+        // 유효성 검사
+        if (!vehicle_state.valid) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
+                                 "Vehicle state not available yet");
+            return;
+        }
+        
+        if (!path_valid || local_path.empty()) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
+                                 "Local path not available yet");
+            return;
+        }
+        
+        // 데이터가 너무 오래된 경우 체크 (예: 1초 이상)
+        auto time_diff = (this->now() - vehicle_state.timestamp).seconds();
+        if (time_diff > 1.0) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, 
+                                 "Vehicle state is too old: %.2f seconds", time_diff);
+            return;
+        }
+        
+        // 제어 계산
+        auto [steering_angle, drive_speed] = vehicle_control(
+            vehicle_state.x, vehicle_state.y, vehicle_state.yaw, 
+            vehicle_state.speed, local_path);
+        
+        // 최소 속도 설정
+        drive_speed = std::max(drive_speed, ini_load_float("control", "min_speed", 0.0f, ini_file_path_));
+        
+        // 제어 명령 퍼블리시
+        auto drive_msg = ackermann_msgs::msg::AckermannDriveStamped();
+        drive_msg.header.stamp = this->now();
+        drive_msg.header.frame_id = "ego_racecar/base_link";
+        drive_msg.drive.steering_angle = steering_angle;
+        drive_msg.drive.speed = drive_speed;
+        
+        float control_mode = ini_load_float("control", "control_mode", 0, ini_file_path_);
+        if (control_mode == 1.0) {  // Drive mode 0 : Manual control, 1 : Auto control
+            drive_pub_->publish(drive_msg);
+            RCLCPP_DEBUG(this->get_logger(), 
+                        "Published drive command: steering=%.3f rad (%.1f deg), speed=%.2f m/s", 
+                        steering_angle, steering_angle * 180.0 / M_PI, drive_speed);
+        }
+        
+        // 디버그 정보 퍼블리시
+        std_msgs::msg::Float32 target_velocity_msg;
+        target_velocity_msg.data = drive_speed;
+        target_velocity_pub_->publish(target_velocity_msg);
+
+        std_msgs::msg::Float32 car_velocity_msg;
+        car_velocity_msg.data = vehicle_state.speed;
+        car_velocity_pub_->publish(car_velocity_msg);
+
+        std_msgs::msg::Float32 cte_msg;
+        cte_msg.data = cross_track_error_;
+        cross_track_error_pub_->publish(cte_msg);
+
+        std_msgs::msg::Float32 yaw_error_msg;
+        yaw_error_msg.data = yaw_error_;
+        yaw_error_pub_->publish(yaw_error_msg);
+        
+    } catch (const std::exception &e) {
+        RCLCPP_ERROR(this->get_logger(), "Error during control_timer_callback: %s", e.what());
+    }
 }
 
 // Pure Pursuit 컨트롤러 수정 및 완성
@@ -122,7 +264,6 @@ float Control::pure_pursuit_controller(float base_link_x, float base_link_y, flo
     target_wp.y = target_y;
     target_wp.psi = 0.0f;
     target_waypoints.push_back(target_wp);
-    publish_closest_waypoints_marker(target_waypoints, 1.0f, 0.0f, 0.0f, "ego_racecar/base_link");  // 빨간색으로 표시
 
     // Pure Pursuit 알고리즘
     float lookahead_angle = std::atan2(target_y, target_x);
@@ -285,8 +426,6 @@ float Control::stanley_controller(float base_link_x, float base_link_y, float ba
     // wp2.y   = local_waypoints[second_idx].y;
     // wp2.psi = local_waypoints[second_idx].heading;
     // front_axle_closest_waypoints.push_back(wp2);
-
-    // publish_closest_waypoints_marker(front_axle_closest_waypoints, 1.0f, 0.0f, 0.0f, "ego_racecar/base_link");  // 빨간색으로 표시
 
     // // 점과 직선 사이의 거리 계산
     // float dx = local_waypoints[second_idx].x - local_waypoints[first_idx].x;
@@ -508,7 +647,6 @@ std::pair<float, float> Control::vehicle_control(float base_link_x, float base_l
 
     // raceline의 속도 값을 목표 속도로 사용
     float speed_scale = ini_load_float("control", "speed_scale", 1.0f, ini_file_path_);
-    // float target_speed = speed_scale * ini_load_float("control", "target_velocity", 0, ini_file_path_);
     float drive_speed = speed_scale * waypoints[0].vx;  // raceline의 속도 값을 목표 속도로 사용
     float target_speed = drive_speed;  // 속도 스케일링 적용
 
@@ -517,33 +655,14 @@ std::pair<float, float> Control::vehicle_control(float base_link_x, float base_l
     bool adaptive_stanley = ini_load_bool("adaptive-stanley", "adaptive_stanley", 0, ini_file_path_);
     if (adaptive_stanley) {
         // Adaptive Stanley Controller 사용
-        RCLCPP_INFO(this->get_logger(), "Using Adaptive Stanley Controller");
+        RCLCPP_DEBUG(this->get_logger(), "Using Adaptive Stanley Controller");
         steering_angle = adaptive_stanley_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
     }
     else {
         // 일반 Stanley Controller 사용
-        RCLCPP_INFO(this->get_logger(), "Using Stanley Controller");
+        RCLCPP_DEBUG(this->get_logger(), "Using Stanley Controller");
         steering_angle = stanley_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
     }
-
-    // steering_angle = pure_pursuit_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
-
-    // target_speed와 car_speed를 퍼블리시
-    std_msgs::msg::Float32 target_velocity_msg;
-    target_velocity_msg.data = target_speed;
-    target_velocity_pub_->publish(target_velocity_msg);
-
-    std_msgs::msg::Float32 car_velocity_msg;
-    car_velocity_msg.data = car_speed;
-    car_velocity_pub_->publish(car_velocity_msg);
-
-    std_msgs::msg::Float32 cte_msg;
-    cte_msg.data = cross_track_error_;
-    cross_track_error_pub_->publish(cte_msg);
-
-    std_msgs::msg::Float32 yaw_error_msg;
-    yaw_error_msg.data = yaw_error_;
-    yaw_error_pub_->publish(yaw_error_msg);
 
     return std::make_pair(steering_angle, drive_speed);
 }
@@ -573,298 +692,41 @@ float Control::pid_controller(float target_speed, float current_speed) {
     return output;
 }
 
-// complete : control_callback.cpp
-void Control::initial_odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg) {
-    try {
-        // callback이 제대로 작동하는지 확인
-        RCLCPP_INFO(this->get_logger(), "Initial pose callback triggered");
-
-        // base_link 좌표계의 위치와 자세 추출
-        float base_link_x = odom_msg->pose.pose.position.x;
-        float base_link_y = odom_msg->pose.pose.position.y;
-        float global_current_yaw = tf2::getYaw(odom_msg->pose.pose.orientation);
-
-        // base_link에서 front_wheel로 변환 (wheelbase만큼 앞쪽으로 이동)
-        const float wheelbase = ini_load_float("vehicle", "wheelbase", 0, ini_file_path_);
-        float global_current_x = base_link_x + wheelbase * std::cos(global_current_yaw);
-        float global_current_y = base_link_y + wheelbase * std::sin(global_current_yaw);
-        
-        // 전체 raceline waypoints에서 가장 가까운 점 찾기 (초기 설정)
-        size_t closest_idx = 0;
-        float min_dist = std::numeric_limits<float>::max();
-        for (size_t i = 0; i < global_raceline_waypoints_.size(); ++i) {
-            float dx = global_raceline_waypoints_[i].x - global_current_x;
-            float dy = global_raceline_waypoints_[i].y - global_current_y;
-            float dist = std::sqrt(dx * dx + dy * dy);
-            if (dist < min_dist) {
-                min_dist = dist;
-                closest_idx = i;
-            }
-        }
-        
-        current_closest_idx_ = closest_idx;
-        RCLCPP_INFO(this->get_logger(), "Initial closest waypoint found: index %zu, distance %.2f", 
-                    current_closest_idx_, min_dist);
-        
-        // 초기 odometry 구독 해제하고 일반 odometry 구독 시작
-        initial_odom_subscription_.reset();
-        odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/ego_racecar/odom", 10, std::bind(&Control::odom_callback, this, std::placeholders::_1));
-
-    } catch (const std::exception &e) {
-        RCLCPP_ERROR(this->get_logger(), "Error during initial_odom_callback: %s", e.what());
-    }
-}
-
-// complete : control_util.cpp
-size_t Control::find_closest_waypoint_local_search(float global_current_x, float global_current_y) {
-    const size_t search_range = 20; // 검색 범위를 늘림
-    const size_t total_waypoints = global_raceline_waypoints_.size();
-    
-    size_t closest_idx = current_closest_idx_;
-    float min_dist = std::numeric_limits<float>::max();
-    
-    // 순환 경로를 고려한 검색
-    for (int i = -static_cast<int>(search_range); i <= static_cast<int>(search_range); ++i) {
-        // 순환 인덱스 계산 (음수도 처리)
-        size_t idx = (current_closest_idx_ + i + total_waypoints) % total_waypoints;
-        
-        float dx = global_raceline_waypoints_[idx].x - global_current_x;
-        float dy = global_raceline_waypoints_[idx].y - global_current_y;
-        float dist = std::sqrt(dx * dx + dy * dy);
-        
-        if (dist < min_dist) {
-            min_dist = dist;
-            closest_idx = idx;
-        }
-    }
-    
-    // 디버그 출력 추가
-    // if (current_closest_idx_ > total_waypoints - 50) {  // 끝 부분에 가까워지면
-    //     RCLCPP_INFO(this->get_logger(), "Near end: current_idx=%zu, new_idx=%zu, total=%zu, dist=%.2f", 
-    //                 current_closest_idx_, closest_idx, total_waypoints, min_dist);
-    // }
-    
-    return closest_idx;
-}
-// complete : control_callback.cpp
-void Control::odom_callback(const nav_msgs::msg::Odometry::ConstSharedPtr odom_msg) {
-    try {
-        // global 좌표계 기준 base_link의 위치와 자세 추출
-        float base_link_x = odom_msg->pose.pose.position.x;
-        float base_link_y = odom_msg->pose.pose.position.y;
-        float base_link_yaw = tf2::getYaw(odom_msg->pose.pose.orientation);
-
-        // std::cout << "base_link_x: " << base_link_x << ", base_link_y: " << base_link_y << ", base_link_yaw: " << base_link_yaw << std::endl;
-
-        // global 좌표계 기준 차량의 앞축 위치 계산
-        const float wheelbase = ini_load_float("vehicle", "wheelbase", 0, ini_file_path_);
-        float front_axle_x = base_link_x + wheelbase * std::cos(base_link_yaw);
-        float front_axle_y = base_link_y + wheelbase * std::sin(base_link_yaw);
-        float front_axle_yaw = base_link_yaw;
-
-        // 현재 차량 속도 계산
-        float car_current_speed = std::sqrt(
-            odom_msg->twist.twist.linear.x * odom_msg->twist.twist.linear.x +
-            odom_msg->twist.twist.linear.y * odom_msg->twist.twist.linear.y);
-
-
-        // wall_collision이 발생하면 current_closest_idx_를 0으로 초기화
-        if (wall_collision_) {
-            RCLCPP_WARN(this->get_logger(), "Wall collision detected, resetting current_closest_idx_ to 0");
-            current_closest_idx_ = 0;
-            wall_collision_ = false;  // 충돌 상태 초기화
-        }
-
-        // 효율적인 가장 가까운 waypoint 찾기 (순환 경로 고려)
-        // 차량 앞축의 중심점을 기준으로 가장 가까운 waypoint 찾기
-        size_t closest_idx = find_closest_waypoint_local_search(base_link_x, base_link_y);
-        current_closest_idx_ = closest_idx; // 현재 인덱스 업데이트
-        RCLCPP_INFO(this->get_logger(), "Closest waypoint index: %zu", closest_idx);
-
-        // lookahead waypoints 생성
-        // base_link 위치와 가장 가까운 waypoint부터 시작하여 lookahead_waypoint_num개의 lookahead waypoints 생성
-        int lookahead_waypoint_num = ini_load_float("control", "lookahead_waypoint_num", 0, ini_file_path_);
-        std::vector<RacelineWaypoint> lookahead_waypoints;
-        for (int i = 0; i < lookahead_waypoint_num; i++) {
-            size_t idx = (i + closest_idx + global_raceline_waypoints_.size()) % global_raceline_waypoints_.size();  // 순환 인덱스
-            // std::cout << "lookahead_waypoints[" << i << "] index: " << idx << std::endl;
-            lookahead_waypoints.push_back(global_raceline_waypoints_[idx]);
-            // std::cout << "lookahead_waypoints[" << i << "] vx: " << lookahead_waypoints[i].vx << std::endl;
-        }
-
-        // lookahead waypoints 출력
-        publish_lookahead_waypoints_marker(lookahead_waypoints, 0.0f, 1.0f, 0.0f, "map");  // 초록색으로 표시
-
-        // steering angle과 drive speed 계산
-        auto [steering_angle, drive_speed] = vehicle_control(base_link_x, base_link_y, base_link_yaw, car_current_speed, lookahead_waypoints);
-        
-        // 최소 속도 설정
-        drive_speed = std::max(drive_speed, ini_load_float("control", "min_speed", 0.0f, ini_file_path_));
-        float target_speed = global_raceline_waypoints_[closest_idx].vx;
-
-        auto drive_msg = ackermann_msgs::msg::AckermannDriveStamped();
-        drive_msg.drive.steering_angle = steering_angle;
-        drive_msg.drive.speed = drive_speed;
-
-        std::cout << "drive_speed : " << drive_speed << ", target_speed: " << target_speed << std::endl;
-
-        float control_mode = ini_load_float("control", "control_mode", 0, ini_file_path_);
-        std::cout << "control_mode: " << control_mode << std::endl;
-        if (control_mode == 1.0) {  // Drive mode 0 : Manual control, 1 : Auto control
-            std::cout << "Publishing drive message with steering angle: " << steering_angle * 180 / M_PI << " degrees, speed: " << drive_speed << std::endl;
-            drive_pub_->publish(drive_msg);
-        }
-    }
-    catch (const std::exception &e) {
-        RCLCPP_ERROR(this->get_logger(), "Error during odom_callback: %s", e.what());
-    }
-}
-
-// complete : control_metrics.cpp
-void Control::load_raceline_waypoints(const std::string& csv_path) {
-    std::ifstream file(csv_path);
-    std::string line;
-    
-    // 첫 번째 헤더 라인 건너뛰기
-    if (std::getline(file, line)) {
-        // 헤더 라인 건너뛰기
-    }
-    
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        
-        std::stringstream ss(line);
-        std::string token;
-        std::vector<std::string> tokens;
-        
-        // 세미콜론으로 분리
-        while (std::getline(ss, token, ';')) {
-            tokens.push_back(token);
-        }
-        
-        // raceline 형식: s_m; x_m; y_m; psi_rad; kappa_radpm; vx_mps; ax_mps2
-        if (tokens.size() >= 6) {
-            try {
-                RacelineWaypoint wp;
-                wp.s = std::stof(tokens[0]);      // s_m
-                wp.x = std::stof(tokens[1]);      // x_m
-                wp.y = std::stof(tokens[2]);      // y_m
-                wp.psi = std::stof(tokens[3]);    // psi_rad
-                wp.kappa = std::stof(tokens[4]);  // kappa_radpm
-                wp.vx = std::stof(tokens[5]);     // vx_mps
-                global_raceline_waypoints_.push_back(wp);
-            } catch (const std::exception& e) {
-                RCLCPP_WARN(this->get_logger(), "Failed to parse line: %s", line.c_str());
-            }
-        }
-    }
-    
-    RCLCPP_INFO(this->get_logger(), "Loaded %zu raceline waypoints", global_raceline_waypoints_.size());
-}
-
-// complete : control_visualize.cpp
-// local point의 waypoint를 시각화하는 함수
-void Control::publish_lookahead_waypoints_marker(const std::vector<RacelineWaypoint>& lookahead_waypoints, float r, float g, float b, std::string frame_id) {
+void Control::publishMarker(float heading_deg, float cross_track_error, float cross_track_deg, float steering_deg) {
     visualization_msgs::msg::Marker marker;
-    marker.header.frame_id = "map";
+    marker.header.frame_id = "ego_racecar/base_link";  // base_link 좌표계에서 표시
     marker.header.stamp = this->now();
-    marker.ns = "lookahead_raceline";
+    marker.ns = "stanley_debug";
     marker.id = 1;
-    marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;  // 삼각형 대신 구(원) 사용
+    marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
     marker.action = visualization_msgs::msg::Marker::ADD;
-    marker.scale.x = 0.04;  // 원의 직경 (x축)
-    marker.scale.y = 0.04;  // 원의 직경 (y축)
-    marker.scale.z = 0.04;  // 원의 높이 (z축)
-    
-    for (size_t i = 0; i < lookahead_waypoints.size(); ++i) {
-        const auto& wp = lookahead_waypoints[i];
-        
-        // 원의 중심점 생성
-        geometry_msgs::msg::Point point;
-        point.x = wp.x;
-        point.y = wp.y;
-        point.z = 0.05;  // 약간 위로 올림
-        
-        marker.points.push_back(point);
-        
-        // 색상 설정
-        std_msgs::msg::ColorRGBA color;
-        color.a = 1.0f;
-        color.r = r;
-        color.g = g;
-        color.b = b;
 
-        marker.colors.push_back(color);
-    }
-    
-    lookahead_waypoints_marker_pub_->publish(marker);
+    // RViz에서 보기 좋게 위치
+    marker.pose.position.x = 1.0;
+    marker.pose.position.y = -1.0;
+    marker.pose.position.z = 2.0;
+    marker.pose.orientation.w = 1.0;
+
+    marker.scale.z = 0.2;   // 글자 크기
+    marker.color.r = 1.0;
+    marker.color.g = 1.0;
+    marker.color.b = 1.0;
+    marker.color.a = 1.0;
+
+    std::ostringstream ss;
+    ss.setf(std::ios::fixed);
+    ss.precision(2);
+    ss << "Heading error: " << heading_deg * 180 / M_PI << " deg\n"
+       << "Cross track error: " << cross_track_error << " m\n"
+       << "Cross track angle: " << cross_track_deg * 180 / M_PI << " deg\n"
+       << "Steering angle: " << steering_deg * 180 / M_PI << " deg\n"
+       << "Car speed: " << publish_car_speed_ << " m/s\n"
+       << "Lookahead distance: " << publish_lookahead_distance_ << " m\n";
+    marker.text = ss.str();
+
+    text_visualize_pub_->publish(marker);
 }
 
-
-// front_axle과 가장 가까운 waypoint 2개를 시각화하는 함수
-void Control::publish_closest_waypoints_marker(const std::vector<RacelineWaypoint>& closest_waypoints, float r, float g, float b, std::string frame_id) {
-    visualization_msgs::msg::Marker marker;
-    marker.header.frame_id = frame_id;
-    marker.header.stamp = this->now();
-    marker.ns = "closest_raceline";
-    marker.id = 1;
-    marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;  // 삼각형 대신 구(원) 사용
-    marker.action = visualization_msgs::msg::Marker::ADD;
-    marker.scale.x = 0.04;  // 원의 직경 (x축)
-    marker.scale.y = 0.04;  // 원의 직각 (y축)
-    marker.scale.z = 0.04;  // 원의 높이 (z축)
-
-    for (size_t i = 0; i < closest_waypoints.size(); ++i) {
-        const auto& wp = closest_waypoints[i];
-
-        // 원의 중심점 생성
-        geometry_msgs::msg::Point point;
-        point.x = wp.x;
-        point.y = wp.y;
-        point.z = 0.05;  // 약간 위로 올림
-
-        marker.points.push_back(point);
-
-        // 색상 설정
-        std_msgs::msg::ColorRGBA color;
-        color.a = 1.0f;
-        color.r = r;
-        color.g = g;
-        color.b = b;
-
-        marker.colors.push_back(color);
-    }
-
-    closest_waypoints_marker_pub_->publish(marker);
-}
-
-// complete : control_util.cpp
-// global raceline waypoints를 차량 좌표계로 변환하는 함수
-std::vector<LocalWaypoint> Control::global_to_local(float car_x, float car_y, float car_yaw, const std::vector<RacelineWaypoint>& waypoints) {
-    std::vector<LocalWaypoint> local_points;
-    float cos_yaw = std::cos(-car_yaw);
-    float sin_yaw = std::sin(-car_yaw);
-
-    for (const auto& wp : waypoints) {
-        // 위치 변환
-        float dx = wp.x - car_x;
-        float dy = wp.y - car_y;
-        float local_x = dx * cos_yaw - dy * sin_yaw;
-        float local_y = dx * sin_yaw + dy * cos_yaw;
-        float kappa = wp.kappa;  // kappa는 변환하지 않음
-
-        // 헤딩 변환
-        float local_heading = wp.psi - car_yaw;
-        while (local_heading > M_PI) local_heading -= 2 * M_PI;
-        while (local_heading < -M_PI) local_heading += 2 * M_PI;
-        
-        local_points.emplace_back(local_x, local_y, local_heading, kappa);
-    }
-    return local_points;
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // 공통 유틸: 섹션/키에서 원문 문자열 얻기
 static bool ini_get_raw(const std::string& section, const std::string& key,
@@ -934,42 +796,25 @@ std::string Control::ini_load_string(const std::string& section, const std::stri
     return s;
 }
 
-void Control::publishMarker(float heading_deg, float cross_track_error, float cross_track_deg, float steering_deg) {
-    visualization_msgs::msg::Marker marker;
-    marker.header.frame_id = "ego_racecar/base_link";  // base_link 좌표계에서 표시
-    marker.header.stamp = this->now();
-    marker.ns = "stanley_debug";
-    marker.id = 1;
-    marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-    marker.action = visualization_msgs::msg::Marker::ADD;
+std::vector<LocalWaypoint> Control::global_to_local(float car_x, float car_y, float car_yaw, const std::vector<RacelineWaypoint>& waypoints) {
+    std::vector<LocalWaypoint> local_points;
+    float cos_yaw = std::cos(-car_yaw);
+    float sin_yaw = std::sin(-car_yaw);
 
-    // RViz에서 보기 좋게 위치
-    marker.pose.position.x = 1.0;
-    marker.pose.position.y = -1.0;
-    marker.pose.position.z = 2.0;
-    marker.pose.orientation.w = 1.0;
+    for (const auto& wp : waypoints) {
+        // 위치 변환
+        float dx = wp.x - car_x;
+        float dy = wp.y - car_y;
+        float local_x = dx * cos_yaw - dy * sin_yaw;
+        float local_y = dx * sin_yaw + dy * cos_yaw;
+        float kappa = wp.kappa;  // kappa는 변환하지 않음
 
-    marker.scale.z = 0.2;   // 글자 크기
-    marker.color.r = 1.0;
-    marker.color.g = 1.0;
-    marker.color.b = 1.0;
-    marker.color.a = 1.0;
-
-    std::ostringstream ss;
-    ss.setf(std::ios::fixed);
-    ss.precision(2);
-    ss << "Heading error: " << heading_deg * 180 / M_PI << " deg\n"
-       << "Cross track error: " << cross_track_error << " m\n"
-       << "Cross track angle: " << cross_track_deg * 180 / M_PI << " deg\n"
-       << "Steering angle: " << steering_deg * 180 / M_PI << " deg\n"
-       << "Car speed: " << publish_car_speed_ << " m/s\n"
-       << "Lookahead distance: " << publish_lookahead_distance_ << " m\n";
-    marker.text = ss.str();
-
-    text_visualize_pub_->publish(marker);
-}
-
-void Control::wall_collision_callback(const custom_msgs::msg::WallCollision::SharedPtr msg)
-{
-    wall_collision_ = msg->collision;
+        // 헤딩 변환
+        float local_heading = wp.psi - car_yaw;
+        while (local_heading > M_PI) local_heading -= 2 * M_PI;
+        while (local_heading < -M_PI) local_heading += 2 * M_PI;
+        
+        local_points.emplace_back(local_x, local_y, local_heading, kappa);
+    }
+    return local_points;
 }

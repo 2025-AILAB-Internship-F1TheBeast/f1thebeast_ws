@@ -24,14 +24,8 @@
 
 > ### Control
 **Yunsang Jeong**
-<<<<<<< HEAD
-- Control
-- Done : Pure pursuit, Stanley, PID
-- ToDo : MPC Study, Code
-=======
 - Hardware
 - ToDo : Pure pursuit, Stanley, PID
->>>>>>> a6daf1735d92431111a22d29bfe265aa7c930581
 
 ## Basic Launch
 ```bash
@@ -57,3 +51,8 @@ alias f110="ros2 launch f1tenth_stack bringup_launch.py"  # F1Tenth Stack Run
 alias key="ros2 run key_teleop key_teleop"  # Keyboard Control
 ```
 Add this at ~/.bashrc or ~/.zshrc and source it for keyboard shortcut
+
+# Error
+asio_cmake error:
+first option : sudo apt-get install ros-humble-asio-cmake-module ros-humble-io-context ros-humble-serial-driver
+second option : cd f1thebeast_ws/src/f1tenth_system/vesc/ and git clone https://github.com/ros-drivers/transport_drivers.git
