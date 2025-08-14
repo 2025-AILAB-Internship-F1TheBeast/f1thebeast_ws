@@ -55,4 +55,4 @@ Add this at ~/.bashrc or ~/.zshrc and source it for keyboard shortcut
 # Error
 asio_cmake error:
 first option : sudo apt-get install ros-humble-asio-cmake-module ros-humble-io-context ros-humble-serial-driver
-second option : go to f1thebeast_ws/src/f1tenth_system/vesc/ and git clone https://github.com/ros-drivers/transport_drivers.git
+second option : cd f1thebeast_ws/src/f1tenth_system/vesc/ and git clone https://github.com/ros-drivers/transport_drivers.git
