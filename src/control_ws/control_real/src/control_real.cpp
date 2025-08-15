@@ -41,7 +41,7 @@ Control::Control(std::string ini_file_path) :
         odom_topic_ = "/pf/pose/odom";
     }
 
-    std::string local_path_sub_topic_ = "/chosen_path_yunsang";
+    std::string local_path_sub_topic_ = "/chosen_path";
 
     // target velocity publisher 초기화
     target_velocity_pub_ = this->create_publisher<std_msgs::msg::Float32>("target_velocity", 10);
