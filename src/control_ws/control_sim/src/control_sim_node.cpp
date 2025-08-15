@@ -17,7 +17,7 @@ void print_usage() {
 int main(int argc, char **argv) {
 
     // 기본 ini 파일 경로
-    std::string ini_file_path = "/home/jys/ROS2/f1thebeast_ws/src/control_ws/control_sim/config/param.ini";
+    std::string ini_file_path = "/home/thebeast/Programming/f1thebeast_ws/src/control_ws/control_sim/config/param.ini";
     // 명령행 인자 처리
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--help") == 0) {

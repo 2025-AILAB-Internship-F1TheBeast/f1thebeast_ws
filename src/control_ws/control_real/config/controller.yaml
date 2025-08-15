@@ -1,5 +1,5 @@
 controller:
   ros__parameters:
-    use_gt_odom: true
-    use_pf_odom: false
+    use_gt_odom: false
+    use_pf_odom: true
     # Add more parameters as needed

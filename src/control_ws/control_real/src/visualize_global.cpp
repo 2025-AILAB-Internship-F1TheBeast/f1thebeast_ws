@@ -5,7 +5,7 @@ VisualizeGlobal::VisualizeGlobal() : Node("visualize_global")
     marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("global_waypoints_marker", 1);
 
     // raceline.csv 경로로 변경
-    std::string raceline_csv_path = ini_load_string("paths", "raceline_csv", "", "/home/jys/ROS2/f1thebeast_ws/src/control_ws/control_real/config/param.ini");
+    std::string raceline_csv_path = ini_load_string("paths", "raceline_csv", "", "/home/thebeast/Programming/f1thebeast_ws/src/control_ws/control_real/config/param.ini");
     std::cout << raceline_csv_path << std::endl;
     load_raceline_waypoints(raceline_csv_path);
 

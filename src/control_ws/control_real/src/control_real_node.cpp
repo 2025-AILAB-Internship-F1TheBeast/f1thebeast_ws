@@ -9,7 +9,7 @@ int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
     
     // 기본 ini 파일 경로
-    std::string ini_file_path = "/home/jys/ROS2/f1thebeast_ws/src/control_ws/control_real/config/param.ini";
+    std::string ini_file_path = "/home/thebeast/Programming/f1thebeast_ws/src/control_ws/control_real/config/param.ini";
     
     // Control 노드 생성
     auto node = std::make_shared<Control>(ini_file_path);
