@@ -200,12 +200,6 @@ void Control::control_timer_callback() {
 // Pure Pursuit 컨트롤러 수정 및 완성
 float Control::pure_pursuit_controller(float base_link_x, float base_link_y, float base_link_yaw, float car_speed, const std::vector<RacelineWaypoint>& waypoints) {
     publish_car_speed_ = car_speed;  // 퍼블리시할 차량 속도
-    
-    // waypoints가 충분한지 확인
-    if (waypoints.size() < 2) {
-        RCLCPP_ERROR(this->get_logger(), "Not enough waypoints for Pure Pursuit: %zu", waypoints.size());
-        return 0.0f;
-    }
 
     // Pure Pursuit 파라미터 로드
     float lookahead_distance = ini_load_float("pure-pursuit", "lookahead_distance", 1.0f, ini_file_path_);
@@ -652,11 +646,19 @@ std::pair<float, float> Control::vehicle_control(float base_link_x, float base_l
 
     // stanley controller 호출해서 스티어링 각도 계산
     float steering_angle = 0.0f;
-    bool adaptive_stanley = ini_load_bool("adaptive-stanley", "adaptive_stanley", 0, ini_file_path_);
-    if (adaptive_stanley) {
+    bool adaptive_stanley_mode = ini_load_bool("adaptive-stanley", "adaptive_stanley", 0, ini_file_path_);
+    bool pure_pursuit_mode = ini_load_bool("pure-pursuit", "pure_pursuit", 0, ini_file_path_);
+    RCLCPP_DEBUG(this->get_logger(), "Control mode: adaptive_stanley=%d, pure_pursuit=%d", adaptive_stanley_mode, pure_pursuit_mode);
+
+    if (adaptive_stanley_mode) {
         // Adaptive Stanley Controller 사용
         RCLCPP_DEBUG(this->get_logger(), "Using Adaptive Stanley Controller");
         steering_angle = adaptive_stanley_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
+    }
+    else if (pure_pursuit_mode) {
+        // Pure Pursuit Controller 사용
+        RCLCPP_DEBUG(this->get_logger(), "Using Pure Pursuit Controller");
+        steering_angle = pure_pursuit_controller(base_link_x, base_link_y, base_link_yaw, car_speed, waypoints);
     }
     else {
         // 일반 Stanley Controller 사용
